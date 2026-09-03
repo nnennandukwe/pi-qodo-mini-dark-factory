@@ -1,0 +1,72 @@
+{
+  "id": "reject-expired-session-token",
+  "title": "Reject expired API tokens during session renewal",
+  "issue": "The renewal function validates that a token has a subject but never rejects tokens whose expiresAt is at or before the current time.",
+  "repository": {
+    "url": "https://github.com/nnennandukwe/pi-qodo-quality-fixture.git",
+    "clone_ref": "main",
+    "base_ref": "origin/main",
+    "repo_full_name": "nnennandukwe/pi-qodo-quality-fixture"
+  },
+  "acceptance_criteria": [
+    "Expired tokens return status 401 with the existing response schema",
+    "Valid tokens still renew successfully"
+  ],
+  "files_expected": [
+    "src/session.ts",
+    "tests/session.test.ts"
+  ],
+  "files_allowed": [
+    "src/session.ts",
+    "tests/session.test.ts"
+  ],
+  "required_test_files": [
+    "tests/session.test.ts"
+  ],
+  "constraints": [
+    "No dependency upgrades",
+    "Maintain the existing response schema",
+    "Treat expiresAt equal to nowEpochSeconds as expired"
+  ],
+  "non_goals": [
+    "Do not redesign token issuance",
+    "Do not add storage or network calls"
+  ],
+  "verification": [
+    {
+      "id": "held-out-oracle",
+      "argv": [
+        "node",
+        "--experimental-strip-types",
+        "{harness_root}/oracles/session-expiry.mjs",
+        "."
+      ],
+      "required": true
+    },
+    {
+      "id": "tests",
+      "argv": ["npm", "test"],
+      "required": true
+    },
+    {
+      "id": "lint",
+      "argv": ["npm", "run", "lint"],
+      "required": true
+    },
+    {
+      "id": "format",
+      "argv": ["npm", "run", "format:check"],
+      "required": true
+    },
+    {
+      "id": "typecheck",
+      "argv": ["npm", "run", "typecheck"],
+      "required": true
+    },
+    {
+      "id": "security",
+      "argv": ["npm", "run", "security"],
+      "required": true
+    }
+  ]
+}

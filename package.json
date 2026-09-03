@@ -1,0 +1,24 @@
+{
+  "name": "pi-qodo-mini-dark-factory",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "pilot:scripted": "node src/cli.mjs run --runner scripted --scenario happy",
+    "pilot:acceptance": "node src/cli.mjs acceptance",
+    "pilot:baseline": "node src/cli.mjs baseline",
+    "pilot:pi": "node src/cli.mjs run --runner pi",
+    "pilot:pi-qodo": "node src/cli.mjs run --runner pi --reviewer qodo --task tasks/reject-expired-session-token-remote.json",
+    "review:retry": "node src/cli.mjs retry-review",
+    "evidence:compare": "node src/compare.mjs",
+    "evidence:capture-v1": "node src/capture-v1.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "token-service-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "lint": "node scripts/lint.mjs",
+    "format:check": "node scripts/format-check.mjs",
+    "typecheck": "tsc --noEmit",
+    "security": "node scripts/security-check.mjs"
+  }
+}
