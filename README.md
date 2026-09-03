@@ -4,7 +4,7 @@
 
 This repository tests one narrow question: does explicit role separation make an agentic code change easier to inspect without allowing agent confidence to replace executable evidence?
 
-The controller separates planning, implementation, deterministic verification, and semantic review. Only the controller advances the workflow. The public Qodo path is prepared but not yet proven end to end; `nnennandukwe/pi-qodo-quality-fixture` must first be connected to the active Qodo workspace.
+The controller separates planning, implementation, deterministic verification, and semantic review. Only the controller advances the workflow. The public Qodo path has completed one live end-to-end run against [`nnennandukwe/pi-qodo-quality-fixture`](https://github.com/nnennandukwe/pi-qodo-quality-fixture); that proves the integration path works, not that the workflow improves quality across tasks.
 
 ## Architecture
 
@@ -45,10 +45,14 @@ npm run pilot:baseline -- --provider openai-codex --model gpt-5.5
 
 ## Run Pi with Qodo review
 
-Qodo requires a logged-in CLI and a base repository connected to the active Qodo workspace. Connect [`nnennandukwe/pi-qodo-quality-fixture`](https://github.com/nnennandukwe/pi-qodo-quality-fixture) before running this path. The base commit stays available on GitHub; the implementation remains local and unpushed.
+Qodo requires a logged-in CLI and a base repository connected to the active Qodo workspace. The base commit stays available on GitHub; the implementation remains local and unpushed.
 
 ```bash
-qodo whoami --json --skill qodo-review
+qodo read whoami \
+  --json \
+  --skill qodo-review \
+  --skill-version 1.9.5 \
+  --distribution qodo-cli-managed
 npm run pilot:pi-qodo -- \
   --provider openai-codex \
   --model gpt-5.5 \
@@ -67,6 +71,19 @@ npm run review:retry -- \
 
 The retry command accepts only a `REVIEWER_FAILED` source receipt, rechecks the patch digest before and after review, never overwrites the original receipt, and commits a separate attempt receipt last. See `docs/review-retry-proof.md` for the state, invariant, and failure model.
 
+## Latest proven run
+
+On 2026-09-02 PDT (2026-09-03 UTC), the live Pi-to-Qodo path completed the task “reject expired API tokens during session renewal” from public fixture commit `b7ad2dfb64371fc4316e7570e4633fe532f804ec`.
+
+- Pi `0.84.4` ran on Node.js `22.23.2` with `openai-codex`, `gpt-5.5`, and medium reasoning.
+- The implementation changed only `src/session.ts` and `tests/session.test.ts`.
+- The held-out behavior oracle, tests, lint, formatting, type checks, and security checks all passed.
+- Qodo reviewed the verified patch at fast depth and returned `approve` with zero findings. Issue, compliance, skills, and specification review ran; the safety net ran and reinjected zero findings. UI, persona, and cross-repository review were not applicable to this single-repository backend task.
+- The controller confirmed the patch digest before and after review: `e8e7301cc9da4c5a14c8d9c5e0509b88cb335e848db09c827b6d29f16f621aed`.
+- End-to-end wall time was 107.5 seconds. Pi used 9,851 input tokens, 1,184 output tokens, eight turns, and reported $0.091943 in model cost. Qodo review took 61.8 seconds; its cost was not exposed.
+
+The raw receipt and agent event streams remain local and Git-ignored. This README records the bounded result without publishing machine-specific or transcript-heavy artifacts.
+
 ## Evidence boundary
 
 Every run writes its receipt and role artifacts under `.factory-runs/<run-id>/`. Those local artifacts are ignored by Git because they may contain machine-specific paths and raw agent event streams. Curate evidence deliberately before publishing it.
@@ -77,4 +94,4 @@ Every run writes its receipt and role artifacts under `.factory-runs/<run-id>/`.
 - This prototype does not commit, push, open PRs, publish comments, or apply Qodo findings.
 - Receipt token and model-cost totals cover Pi only; the Qodo CLI result does not expose review cost.
 - One task cannot establish a general reduction in escaped defects. A 5–10 task benchmark is still required.
-- Public repository visibility does not prove Qodo workspace access. Treat connection and successful review as separate gates.
+- Repository visibility and Qodo workspace access remain separate gates. The successful run establishes access for the tested repository and account at that point in time, not permanent availability.
