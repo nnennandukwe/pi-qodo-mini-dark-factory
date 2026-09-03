@@ -4,21 +4,25 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runBaseline } from "./baseline.mjs";
+import { observationFromRun, runBenchmark } from "./benchmark.mjs";
 import { validateTask } from "./contracts.mjs";
 import { runPilot } from "./controller.mjs";
 import { assertPiAvailable, PiRunner } from "./pi-runner.mjs";
+import { runCommand } from "./process.mjs";
 import { QodoReviewer } from "./qodo-runner.mjs";
 import { retryReview } from "./review-retry.mjs";
 import { ScriptedRunner } from "./scripted-runner.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const defaultTask = path.join(projectRoot, "tasks", "reject-expired-session-token.json");
+const defaultBenchmarkSuite = path.join(projectRoot, "tasks", "benchmark-suite.json");
 
 const HELP = `Pi x Qodo Mini Dark Factory v2
 
 Usage:
   node src/cli.mjs acceptance
   node src/cli.mjs baseline --provider <provider> --model <model> [--thinking <level>]
+  node src/cli.mjs benchmark --provider <provider> --model <model> [--resume <benchmark-directory>]
   node src/cli.mjs run --runner scripted [--scenario <name>]
   node src/cli.mjs run --runner pi --provider <provider> --model <model> [--thinking <level>]
   node src/cli.mjs run --runner pi --reviewer qodo --task <manifest> --provider <provider> --model <model>
@@ -27,6 +31,7 @@ Usage:
 Commands:
   acceptance  Exercise the happy path and all planted gate failures.
   baseline    Run the same task through one Pi coding agent.
+  benchmark   Run the counterbalanced five-task baseline and Pi + Qodo comparison.
   run         Execute one scripted, live Pi, or Pi + Qodo workflow.
   retry-review  Retry only Qodo against an unchanged, previously verified patch.
 
@@ -42,11 +47,25 @@ Qodo options:
 Retry options:
   --run-dir <path>      REVIEWER_FAILED run whose verified patch should be reviewed.
   --attempt-id <id>     Optional unique diagnostic ID; omit to generate one safely.
+
+Benchmark options:
+  --suite <path>        Benchmark suite manifest; defaults to tasks/benchmark-suite.json.
+  --resume <path>       Resume a benchmark from its durable condition checkpoints.
 `;
 
 const COMMAND_FLAGS = Object.freeze({
   acceptance: new Set(),
   baseline: new Set(["provider", "model", "thinking", "pi-bin", "task"]),
+  benchmark: new Set([
+    "provider",
+    "model",
+    "thinking",
+    "pi-bin",
+    "qodo-bin",
+    "qodo-depth",
+    "suite",
+    "resume",
+  ]),
   run: new Set([
     "runner",
     "scenario",
@@ -209,6 +228,81 @@ async function baseline(flags) {
   );
 }
 
+async function benchmarkCommand(flags) {
+  if (!flags.provider || !flags.model) {
+    throw new Error("Benchmark runs require both --provider and --model");
+  }
+  const piBin = flags["pi-bin"] ?? "pi";
+  const qodoBin = flags["qodo-bin"] ?? "qodo";
+  const qodoDepth = flags["qodo-depth"] ?? "fast";
+  const thinking = flags.thinking ?? "medium";
+  const installed = await assertPiAvailable(piBin);
+  process.stderr.write(`Pi runtime: ${JSON.stringify(installed)}\n`);
+  const [revision, status, qodoVersion] = await Promise.all([
+    runCommand(["git", "rev-parse", "HEAD"], { cwd: projectRoot }),
+    runCommand(["git", "status", "--porcelain"], { cwd: projectRoot }),
+    runCommand([qodoBin, "--version"], { cwd: projectRoot }),
+  ]);
+  if (revision.exit_code !== 0 || status.exit_code !== 0) {
+    throw new Error("Benchmark requires a readable Git revision and worktree status");
+  }
+  if (status.stdout.trim()) {
+    throw new Error("Benchmark requires a clean harness worktree so the controller revision is reproducible");
+  }
+  if (qodoVersion.exit_code !== 0) {
+    throw new Error(`Qodo is unavailable: ${qodoVersion.stderr}`);
+  }
+  const runner = new PiRunner({
+    projectRoot,
+    provider: flags.provider,
+    model: flags.model,
+    thinking,
+    piBin,
+  });
+  const reviewer = new QodoReviewer({
+    qodoBin,
+    depth: qodoDepth,
+  });
+  const result = await runBenchmark({
+    projectRoot,
+    suitePath: path.resolve(flags.suite ?? defaultBenchmarkSuite),
+    resumeDir: flags.resume ? path.resolve(flags.resume) : null,
+    config: {
+      provider: flags.provider,
+      model: flags.model,
+      thinking,
+      qodo_depth: qodoDepth,
+      node_version: process.version,
+      pi_version: installed.cli_version,
+      qodo_cli_version: qodoVersion.stdout.trim(),
+      qodo_skill_version: "1.9.5",
+      harness_revision: revision.stdout.trim(),
+    },
+    executeCondition: async ({ condition, task, taskPath }) => {
+      process.stderr.write(`\n=== BENCHMARK CONDITION ===\n${JSON.stringify({ task_id: task.id, condition }, null, 2)}\n`);
+      const runResult =
+        condition === "baseline"
+          ? await runBaseline({ projectRoot, taskPath, runner })
+          : await runPilot({
+              projectRoot,
+              taskPath,
+              runner,
+              runnerName: "pi",
+              reviewer,
+              reviewerName: "qodo",
+            });
+      return observationFromRun({ projectRoot, task, condition, runResult });
+    },
+  });
+  process.stdout.write(
+    `${JSON.stringify({
+      complete: result.summary.complete,
+      benchmark_dir: result.benchmarkDir,
+      summary: result.summaryPath,
+    })}\n`,
+  );
+}
+
 async function retryReviewCommand(flags) {
   if (!flags["run-dir"]) {
     throw new Error("retry-review requires --run-dir pointing to a REVIEWER_FAILED run");
@@ -242,6 +336,7 @@ try {
     const flags = parseFlags(rest, command);
     if (command === "acceptance") await acceptance();
     else if (command === "baseline") await baseline(flags);
+    else if (command === "benchmark") await benchmarkCommand(flags);
     else if (command === "run") await runOnce(flags);
     else if (command === "retry-review") await retryReviewCommand(flags);
     else throw new Error(`Unknown command: ${command}`);

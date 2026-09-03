@@ -111,9 +111,21 @@ export class QodoReviewer {
     if (!repository) throw new Error("Qodo review requires task.repository metadata");
     const version = await runCommand([this.qodoBin, "--version"], { cwd });
     if (version.exit_code !== 0) throw new Error(`Qodo is unavailable: ${version.stderr}`);
-    const auth = await runCommand([this.qodoBin, "whoami", "--json", "--skill", "qodo-review"], {
-      cwd,
-    });
+    const auth = await runCommand(
+      [
+        this.qodoBin,
+        "read",
+        "whoami",
+        "--json",
+        "--skill",
+        "qodo-review",
+        "--skill-version",
+        "1.9.5",
+        "--distribution",
+        "qodo-cli-managed",
+      ],
+      { cwd },
+    );
     if (auth.exit_code !== 0) {
       throw new Error("Qodo authentication failed. Run `qodo login`, then retry the workflow.");
     }

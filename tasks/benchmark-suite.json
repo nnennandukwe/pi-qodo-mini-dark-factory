@@ -1,0 +1,31 @@
+{
+  "schema_version": "mini-dark-factory-benchmark-suite/v1",
+  "id": "five-task-v1",
+  "tasks": [
+    {
+      "category": "reproducible_bug",
+      "manifest": "tasks/reject-expired-session-token-remote.json",
+      "first_condition": "baseline"
+    },
+    {
+      "category": "validation_rule",
+      "manifest": "tasks/validate-service-port-range.json",
+      "first_condition": "factory"
+    },
+    {
+      "category": "edge_case_tests",
+      "manifest": "tasks/cover-tag-parser-edge-cases.json",
+      "first_condition": "baseline"
+    },
+    {
+      "category": "behavior_preserving_refactor",
+      "manifest": "tasks/deduplicate-email-canonicalization.json",
+      "first_condition": "factory"
+    },
+    {
+      "category": "security_correctness",
+      "manifest": "tasks/block-download-path-prefix-escape.json",
+      "first_condition": "baseline"
+    }
+  ]
+}

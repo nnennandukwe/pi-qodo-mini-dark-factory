@@ -11,6 +11,7 @@
     "pilot:scripted": "node src/cli.mjs run --runner scripted --scenario happy",
     "pilot:acceptance": "node src/cli.mjs acceptance",
     "pilot:baseline": "node src/cli.mjs baseline",
+    "benchmark": "node src/cli.mjs benchmark",
     "pilot:pi": "node src/cli.mjs run --runner pi",
     "pilot:pi-qodo": "node src/cli.mjs run --runner pi --reviewer qodo --task tasks/reject-expired-session-token-remote.json",
     "review:retry": "node src/cli.mjs retry-review",

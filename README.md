@@ -71,6 +71,23 @@ npm run review:retry -- \
 
 The retry command accepts only a `REVIEWER_FAILED` source receipt, rechecks the patch digest before and after review, never overwrites the original receipt, and commits a separate attempt receipt last. See `docs/review-retry-proof.md` for the state, invariant, and failure model.
 
+## Qodo Agentic Toolbox coverage
+
+This repository does not yet demonstrate the entire Qodo Agentic Toolbox. As of 2026-09-02 PDT, Qodo's public skills catalog separates a default `qodo` package from the optional `qodo-standards` package. The live CLI exposes 33 read-only managed tools and 16 approval-gated write tools underneath those workflows; a task should invoke only the tools relevant to its stage, not every catalog entry.
+
+| Workflow | Package | Evidence in this repository |
+| --- | --- | --- |
+| Qodo Setup `1.0.5` | `qodo` | Setup was completed outside the harness; every Qodo run revalidates the authenticated principal. |
+| Qodo Codebase Wisdom `1.1.2` | `qodo` | Partial only. Preflight resolves the public repository through Qodo, but Pi does not yet receive Qodo code, history, prior-PR, or cross-repository context. |
+| Qodo Local Review `1.9.5` | `qodo` | Proven. Qodo reviewed the local verified patch and returned structured findings before any push or PR. |
+| Qodo Review Resolver `1.4.3` | `qodo` | Not exercised. The public repositories have no PR, and the prototype does not push branches or update PR findings. |
+| Qodo Rules `1.1.2` | `qodo-standards` | Access is proven, but retrieved rules are not yet inputs to the planner or implementer. |
+| Qodo Standards Manager `1.0.2` | `qodo-standards` | Intentionally out of scope. It mutates organization standards and is not required to evaluate a code-change workflow. |
+
+Pi is a supported portable-skills target, but the benchmark currently launches Pi with skill discovery disabled so each role receives only its explicit contract and tool allowlist. The current claim is therefore narrow: **Pi orchestrates the roles and Qodo independently reviews the verified local patch.** It is not yet evidence that Pi natively invoked every Qodo skill.
+
+The [Qodo skills catalog](https://github.com/qodo-ai/qodo-skills) is the source of truth for package membership and current workflow versions. The quantitative benchmark below remains focused on role separation and the local-review gate. A separate launch walkthrough is needed to demonstrate native skill installation, Codebase Wisdom and Rules before implementation, and Review Resolver on a real PR without mixing those lifecycle demonstrations into the benchmark result.
+
 ## Latest proven run
 
 On 2026-09-02 PDT (2026-09-03 UTC), the live Pi-to-Qodo path completed the task “reject expired API tokens during session renewal” from public fixture commit `b7ad2dfb64371fc4316e7570e4633fe532f804ec`.
@@ -83,6 +100,29 @@ On 2026-09-02 PDT (2026-09-03 UTC), the live Pi-to-Qodo path completed the task 
 - End-to-end wall time was 107.5 seconds. Pi used 9,851 input tokens, 1,184 output tokens, eight turns, and reported $0.091943 in model cost. Qodo review took 61.8 seconds; its cost was not exposed.
 
 The raw receipt and agent event streams remain local and Git-ignored. This README records the bounded result without publishing machine-specific or transcript-heavy artifacts.
+
+## Run the five-task benchmark
+
+The benchmark pairs the one-agent baseline with the Pi planner/implementer, deterministic verifier, and Qodo local-review workflow across the five planned task types. It alternates which condition runs first and requires a clean harness worktree so every result is bound to a committed controller revision. This is the quality-loop benchmark, not a claim that every Qodo toolbox workflow runs in every condition.
+
+```bash
+npm run benchmark -- \
+  --provider openai-codex \
+  --model gpt-5.5 \
+  --qodo-depth fast
+```
+
+Every completed condition is atomically checkpointed. If an external call interrupts the sequence, rerun the same command with the recovery directory printed by the CLI:
+
+```bash
+npm run benchmark -- \
+  --provider openai-codex \
+  --model gpt-5.5 \
+  --qodo-depth fast \
+  --resume .factory-runs/benchmarks/<benchmark-id>
+```
+
+See [`docs/benchmark-protocol.md`](docs/benchmark-protocol.md) for the task order, metrics, comparison boundary, checkpoint invariants, and recovery contract.
 
 ## Evidence boundary
 

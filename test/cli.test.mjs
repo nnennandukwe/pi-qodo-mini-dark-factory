@@ -22,3 +22,10 @@ test("CLI help documents review retry and recovery input", async () => {
   assert.match(result.stdout, /retry-review --run-dir/);
   assert.match(result.stdout, /--attempt-id/);
 });
+
+test("CLI help documents the benchmark and resume path", async () => {
+  const result = await runCommand([process.execPath, "src/cli.mjs", "--help"], { cwd: root });
+  assert.equal(result.exit_code, 0);
+  assert.match(result.stdout, /benchmark --provider/);
+  assert.match(result.stdout, /--resume/);
+});

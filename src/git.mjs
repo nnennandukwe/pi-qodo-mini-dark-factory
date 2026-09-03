@@ -48,6 +48,11 @@ export async function prepareTaskRepository({ projectRoot, task, destination }) 
   const baseSha = (
     await git(destination, ["rev-parse", "--verify", `${task.repository.base_ref}^{commit}`])
   ).trim();
+  if (task.repository.expected_base_sha && baseSha !== task.repository.expected_base_sha) {
+    throw new Error(
+      `repository base ${baseSha} does not match expected_base_sha ${task.repository.expected_base_sha}`,
+    );
+  }
   const branchSuffix = task.id.replaceAll(/[^a-zA-Z0-9._-]/g, "-");
   await git(destination, ["switch", "-c", `mini-factory/${branchSuffix}`, baseSha]);
   return baseSha;

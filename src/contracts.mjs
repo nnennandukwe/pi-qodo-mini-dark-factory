@@ -39,6 +39,12 @@ export function validateTask(task) {
         errors.push(`task.repository.${key} must be a non-empty string`);
       }
     }
+    if (
+      task.repository.expected_base_sha !== undefined &&
+      !/^[0-9a-f]{40}$/.test(task.repository.expected_base_sha)
+    ) {
+      errors.push("task.repository.expected_base_sha must be a lowercase 40-character Git SHA");
+    }
   }
   if (!nonEmptyStringArray(task.acceptance_criteria)) {
     errors.push("task.acceptance_criteria must be a non-empty string array");

@@ -63,3 +63,12 @@ test("task gate accepts exactly one repository source", () => {
     /exactly one source/,
   );
 });
+
+test("all five benchmark task manifests satisfy the task contract", async () => {
+  const suite = JSON.parse(await readFile(path.join(root, "tasks", "benchmark-suite.json"), "utf8"));
+  assert.equal(suite.tasks.length, 5);
+  for (const entry of suite.tasks) {
+    const manifest = JSON.parse(await readFile(path.join(root, entry.manifest), "utf8"));
+    assert.deepEqual(validateTask(manifest), { ok: true, errors: [] }, entry.manifest);
+  }
+});

@@ -1,7 +1,7 @@
 {
-  "id": "reject-expired-session-token",
-  "title": "Reject expired API tokens during session renewal",
-  "issue": "The renewal function validates that a token has a subject but never rejects tokens whose expiresAt is at or before the current time.",
+  "id": "deduplicate-email-canonicalization",
+  "title": "Deduplicate email canonicalization",
+  "issue": "The login and recovery email exports duplicate the same trim-and-lowercase normalization logic, increasing the chance that their behavior drifts.",
   "repository": {
     "url": "https://github.com/nnennandukwe/pi-qodo-quality-fixture.git",
     "clone_ref": "main",
@@ -10,28 +10,28 @@
     "repo_full_name": "nnennandukwe/pi-qodo-quality-fixture"
   },
   "acceptance_criteria": [
-    "Expired tokens return status 401 with the existing response schema",
-    "Valid tokens still renew successfully"
+    "Both existing exports preserve their current trim-and-lowercase behavior",
+    "Both exports delegate to one shared local helper that implements the trim-and-lowercase normalization expression",
+    "Regression tests cover both exported functions"
   ],
   "files_expected": [
-    "src/session.ts",
-    "tests/session.test.ts"
+    "src/identity.ts",
+    "tests/identity.test.ts"
   ],
   "files_allowed": [
-    "src/session.ts",
-    "tests/session.test.ts"
+    "src/identity.ts",
+    "tests/identity.test.ts"
   ],
   "required_test_files": [
-    "tests/session.test.ts"
+    "tests/identity.test.ts"
   ],
   "constraints": [
-    "No dependency upgrades",
-    "Maintain the existing response schema",
-    "Treat expiresAt equal to nowEpochSeconds as expired"
+    "Keep both exported function names and signatures",
+    "Do not add or upgrade dependencies"
   ],
   "non_goals": [
-    "Do not redesign token issuance",
-    "Do not add storage or network calls"
+    "Do not add email-address validation",
+    "Do not change Unicode or locale behavior"
   ],
   "verification": [
     {
@@ -39,7 +39,7 @@
       "argv": [
         "node",
         "--experimental-strip-types",
-        "{harness_root}/oracles/session-expiry.mjs",
+        "{harness_root}/oracles/email-normalization-refactor.mjs",
         "."
       ],
       "required": true

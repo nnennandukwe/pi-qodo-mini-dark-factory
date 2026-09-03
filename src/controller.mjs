@@ -98,6 +98,9 @@ export async function runPilot({
   const gates = [];
   const agentEvidence = {};
   let verifiedSubject = null;
+  let timeToVerificationMs = null;
+  let verificationCommandsDurationMs = null;
+  let reviewTimeMs = null;
 
   const move = (event, details = {}) => {
     state = transition(state, event, details);
@@ -128,6 +131,9 @@ export async function runPilot({
       started_at: startedAt,
       finished_at: finishedAt,
       wall_time_ms: Math.round(performance.now() - started),
+      time_to_verification_ms: timeToVerificationMs,
+      verification_commands_duration_ms: verificationCommandsDurationMs,
+      review_time_ms: reviewTimeMs,
       base_sha: baseSha,
       verified_subject: verifiedSubject,
       state_history: state.history,
@@ -201,6 +207,7 @@ export async function runPilot({
   const toolPath = path.join(projectRoot, "node_modules", ".bin");
   const verificationEnv = { ...process.env, PATH: `${toolPath}:${process.env.PATH ?? ""}` };
   const checks = [];
+  const verificationStarted = performance.now();
   for (const check of task.verification) {
     const argv = check.argv.map((part) => part.replaceAll("{harness_root}", projectRoot));
     const command = await runCommand(argv, {
@@ -210,6 +217,8 @@ export async function runPilot({
     });
     checks.push({ id: check.id, required: check.required, ...command });
   }
+  verificationCommandsDurationMs = Math.round(performance.now() - verificationStarted);
+  timeToVerificationMs = Math.round(performance.now() - started);
   const evidence = await patchEvidence(repoDir, baseSha);
   await writeFile(path.join(artifactsDir, "diff.patch"), evidence.patch);
   const verification = {
@@ -257,6 +266,7 @@ export async function runPilot({
   gate("evidence_freshness", true, [], { patch_digest: currentEvidence.digest });
 
   move("START_REVIEW");
+  const reviewStarted = performance.now();
   let reviewerResult;
   try {
     reviewerResult = await (reviewer ?? runner).run("reviewer", {
@@ -271,6 +281,7 @@ export async function runPilot({
       },
     });
   } catch (error) {
+    reviewTimeMs = Math.round(performance.now() - reviewStarted);
     const reason = error instanceof Error ? error.message : String(error);
     gate("reviewer_runtime", false, [reason]);
     const reviewedEvidence = await patchEvidence(repoDir, baseSha);
@@ -291,6 +302,7 @@ export async function runPilot({
     move("AGENT_FAILED", { role: "reviewer", reason });
     return finish();
   }
+  reviewTimeMs = Math.round(performance.now() - reviewStarted);
   agentEvidence.reviewer = reviewerResult.evidence;
   await writeJson(path.join(artifactsDir, "review.json"), reviewerResult.output);
   await writeJson(path.join(agentsDir, "reviewer.json"), reviewerResult.evidence);

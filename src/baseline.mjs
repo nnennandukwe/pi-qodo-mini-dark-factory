@@ -55,6 +55,7 @@ export async function runBaseline({ projectRoot, taskPath, runner }) {
   const toolPath = path.join(projectRoot, "node_modules", ".bin");
   const verificationEnv = { ...process.env, PATH: `${toolPath}:${process.env.PATH ?? ""}` };
   const checks = [];
+  const verificationStarted = performance.now();
   for (const check of task.verification) {
     const argv = check.argv.map((part) => part.replaceAll("{harness_root}", projectRoot));
     checks.push({
@@ -63,6 +64,8 @@ export async function runBaseline({ projectRoot, taskPath, runner }) {
       ...(await runCommand(argv, { cwd: repoDir, env: verificationEnv, timeoutMs: 180_000 })),
     });
   }
+  const verificationCommandsDurationMs = Math.round(performance.now() - verificationStarted);
+  const timeToVerificationMs = Math.round(performance.now() - started);
   const evidence = await patchEvidence(repoDir, baseSha);
   await writeFile(path.join(artifactsDir, "diff.patch"), evidence.patch);
   const verification = {
@@ -85,6 +88,9 @@ export async function runBaseline({ projectRoot, taskPath, runner }) {
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     wall_time_ms: Math.round(performance.now() - started),
+    time_to_verification_ms: timeToVerificationMs,
+    verification_commands_duration_ms: verificationCommandsDurationMs,
+    review_time_ms: null,
     base_sha: baseSha,
     verified_subject: {
       base_sha: baseSha,
