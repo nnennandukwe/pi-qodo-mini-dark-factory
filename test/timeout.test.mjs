@@ -3,6 +3,7 @@ import { access, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
+import { observationFromRun } from "../src/benchmark.mjs";
 import { runBaseline } from "../src/baseline.mjs";
 import { runPilot } from "../src/controller.mjs";
 import { PiRunner } from "../src/pi-runner.mjs";
@@ -107,6 +108,14 @@ for (const kind of ["controller", "baseline"]) {
     const persisted = JSON.parse(await readFile(path.join(result.artifactsDir, "receipt.json"), "utf8"));
     assert.equal(persisted.success, false);
     assert.match(JSON.stringify(persisted), /capture limit/);
+    if (kind === "baseline") {
+      assert.equal(persisted.gates.implementation.ok, true);
+      assert.equal(persisted.artifact_paths.verification, "artifacts/verification.json");
+      const observation = await observationFromRun({ projectRoot: workspace.cwd, task, condition: "baseline", runResult: result });
+      assert.equal(observation.implementation_gate_passed, true);
+      assert.equal(observation.required_checks_passed, false);
+      assert.deepEqual(observation.changed_files, ["src/session.ts", "tests/session.test.ts"]);
+    }
     await assert.rejects(access(path.join(result.artifactsDir, "review.json")), { code: "ENOENT" });
   });
 }

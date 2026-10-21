@@ -287,7 +287,7 @@ export async function atomicWriteJson(
 
 function conditionSummary(records, condition) {
   const selected = records.filter((record) => record.condition === condition);
-  const usageComplete = selected.every((record) => record.usage_complete !== false);
+  const usageComplete = selected.length > 0 && selected.every(hasCompleteUsage);
   const completed = selected.filter((record) => record.success).length;
   const checksPassed = selected.filter((record) => record.required_checks_passed).length;
   const passingVerificationTimes = selected
@@ -335,6 +335,7 @@ function pairedDelta(records, valueFor) {
 export function summarizeBenchmark(metadata, records) {
   const expectedRuns = metadata.expected_runs ?? records.length;
   const qodoReviews = records.map((record) => record.qodo_review).filter(Boolean);
+  const usageComplete = records.every(hasCompleteUsage);
   return {
     schema_version: SUMMARY_SCHEMA,
     benchmark_id: metadata.benchmark_id ?? null,
@@ -355,9 +356,9 @@ export function summarizeBenchmark(metadata, records) {
           records,
           (record) => record.verification_commands_duration_ms,
         ),
-        cost_usd: pairedDelta(records, (record) => record.usage.cost_usd),
-        input_tokens: pairedDelta(records, (record) => record.usage.input_tokens),
-        output_tokens: pairedDelta(records, (record) => record.usage.output_tokens),
+        cost_usd: usageComplete ? pairedDelta(records, (record) => record.usage.cost_usd) : null,
+        input_tokens: usageComplete ? pairedDelta(records, (record) => record.usage.input_tokens) : null,
+        output_tokens: usageComplete ? pairedDelta(records, (record) => record.usage.output_tokens) : null,
       },
     },
     qodo: {

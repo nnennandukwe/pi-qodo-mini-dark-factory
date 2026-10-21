@@ -27,6 +27,9 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
   await writeJson(path.join(artifactsDir, "task.json"), task);
 
   process.stderr.write(`\n=== BASELINE STATE ===\n${JSON.stringify({ run_id: runId, status: "RUNNING" }, null, 2)}\n`);
+  let actualChangedFiles = [];
+  let implementationGate = null;
+  let verification = null;
   const finishFailure = async (status, reason, agentEvidence = null) => {
     const complete = hasCompleteUsage(agentEvidence);
     const receipt = {
@@ -38,7 +41,15 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
         ? "Fix the agent runtime error shown above and rerun baseline."
         : "Resolve the reported timeout or reduce output with a smaller patch, then rerun implementation and verification.",
       usage: complete ? agentEvidence.usage : null, usage_complete: complete,
-      artifact_paths: { task: "artifacts/task.json" },
+      gates: {
+        ...(implementationGate ? { implementation: implementationGate } : {}),
+        verification: { passed: false, failed_checks: [], reasons: [reason] },
+      },
+      artifact_paths: {
+        task: "artifacts/task.json",
+        ...(agentEvidence ? { agent: "artifacts/agent.json", implementation: "artifacts/implementation.json" } : {}),
+        ...(verification ? { verification: "artifacts/verification.json" } : {}),
+      },
     };
     await writeJson(path.join(artifactsDir, "receipt.json"), receipt);
     return { receipt, runDir, artifactsDir };
@@ -53,8 +64,8 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
   try {
     await writeJson(path.join(artifactsDir, "agent.json"), agentResult.evidence);
     await writeJson(path.join(artifactsDir, "implementation.json"), agentResult.output);
-    const actualChangedFiles = await changedFiles(repoDir, baseSha);
-    const implementationGate = validateImplementationReport(agentResult.output, task, actualChangedFiles);
+    actualChangedFiles = await changedFiles(repoDir, baseSha);
+    implementationGate = validateImplementationReport(agentResult.output, task, actualChangedFiles);
 
     const toolPath = path.join(projectRoot, "node_modules", ".bin");
     const verificationEnv = { ...process.env, PATH: `${toolPath}:${process.env.PATH ?? ""}` };
@@ -70,7 +81,7 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
     }
     const verificationCommandsDurationMs = Math.round(performance.now() - verificationStarted);
     const timeToVerificationMs = Math.round(performance.now() - started);
-    const verification = {
+    verification = {
       task_id: task.id, base_sha: baseSha, patch_digest: null,
       changed_files: actualChangedFiles, checks, evidence_complete: false,
     };

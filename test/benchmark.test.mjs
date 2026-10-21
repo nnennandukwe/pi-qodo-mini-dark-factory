@@ -125,6 +125,7 @@ function observation(condition, overrides = {}, taskValue = task) {
     time_to_verification_ms: condition === "factory" ? 120 : 90,
     verification_commands_duration_ms: 10,
     review_time_ms: condition === "factory" ? 80 : null,
+    usage_complete: true,
     usage: {
       input_tokens: condition === "factory" ? 2000 : 1000,
       output_tokens: condition === "factory" ? 200 : 100,
@@ -838,4 +839,33 @@ test("benchmark checkpoints functional outcomes with unknown review costs", asyn
   });
   assert.equal(resumed.summary.completed_run_records, 10);
   assert.equal(JSON.parse(summaryBefore).conditions.factory.usage_complete, false);
+});
+
+
+test("paired usage comparisons stay unknown when one task has incomplete usage", () => {
+  const records = [observation("baseline"), observation("factory"),
+    observation("baseline", { task_id: "other-task" }),
+    observation("factory", { task_id: "other-task", usage_complete: false,
+      usage: { input_tokens: null, output_tokens: null, cost_usd: null, turns: null } })];
+  const summary = summarizeBenchmark({ expected_runs: 4 }, records);
+  assert.equal(summary.conditions.factory.usage_complete, false);
+  for (const field of ["cost_usd", "input_tokens", "output_tokens"]) {
+    assert.equal(summary.paired.factory_minus_baseline[field], null);
+  }
+  const unrun = summarizeBenchmark({ expected_runs: 2 }, [observation("baseline")]);
+  assert.equal(unrun.conditions.factory.usage_complete, false);
+  assert.equal(unrun.conditions.factory.usage.cost_usd, null);
+});
+
+
+test("legacy benchmark records remain readable with unverified usage totals suppressed", () => {
+  const baseline = observation("baseline");
+  const factory = observation("factory");
+  delete factory.usage_complete;
+  const summary = summarizeBenchmark({ expected_runs: 2 }, [baseline, factory]);
+  assert.equal(summary.complete, true);
+  assert.equal(summary.conditions.factory.completion_rate, 1);
+  assert.equal(summary.conditions.factory.usage_complete, false);
+  assert.equal(summary.conditions.factory.usage.cost_usd, null);
+  assert.equal(summary.paired.factory_minus_baseline.cost_usd, null);
 });

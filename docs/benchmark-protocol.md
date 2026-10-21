@@ -36,7 +36,7 @@ The summary records, per condition:
 - Pi input/output tokens, turns, and reported model cost;
 - Qodo decision, findings, skipped checks, and review duration for the factory condition.
 
-Human-review time and substantive human corrections are explicitly `null` because no human review session is embedded in an automated run. Qodo cost is also unavailable from the CLI result. Conditions still checkpoint their functional results, but aggregate usage is marked incomplete and its totals and paired cost/token comparisons stay `null` when any required component isn't metered. Pi's raw agent evidence retains its reported usage. Legacy receipts without a completeness marker stay readable with unknown usage.
+Human-review time and substantive human corrections are explicitly `null` because no human review session is embedded in an automated run. Qodo cost is also unavailable from the CLI result. Conditions still checkpoint their functional results, but aggregate usage is marked incomplete and its totals and paired cost/token comparisons stay `null` when any required component isn't metered. Pi's raw agent evidence retains its reported usage. Legacy receipts and condition records without a completeness marker stay readable with unknown usage.
 
 ## Durable checkpoint and recovery contract
 
