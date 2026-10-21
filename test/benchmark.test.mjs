@@ -125,6 +125,7 @@ function observation(condition, overrides = {}, taskValue = task) {
     time_to_verification_ms: condition === "factory" ? 120 : 90,
     verification_commands_duration_ms: 10,
     review_time_ms: condition === "factory" ? 80 : null,
+    usage_complete: true,
     usage: {
       input_tokens: condition === "factory" ? 2000 : 1000,
       output_tokens: condition === "factory" ? 200 : 100,
@@ -783,4 +784,88 @@ test("run observation rejects disagreement between the verification gate and art
     }),
     /Verification gate and artifact disagree/,
   );
+});
+
+test("run observation rejects a saved timeout that contradicts a passing gate", async (t) => {
+  const projectRoot = await mkdtemp(path.join(os.tmpdir(), "pi-qodo-timeout-observation-"));
+  t.after(() => rm(projectRoot, { recursive: true, force: true }));
+  const runDir = path.join(projectRoot, "run");
+  const artifactsDir = path.join(runDir, "artifacts");
+  await mkdir(artifactsDir, { recursive: true });
+  const receipt = {
+    success: true, terminal_status: "COMPLETE", usage_complete: true,
+    usage: { input: 10, output: 20, cost_usd: 0.01, turns: 1 },
+    gates: { implementation: { ok: true }, verification: { passed: true } },
+    artifact_paths: { verification: "artifacts/verification.json" },
+  };
+  for (const timedOut of [false, true]) {
+    await writeFile(path.join(artifactsDir, "verification.json"), JSON.stringify({
+      changed_files: task.files_expected,
+      checks: [{ id: "held-out-oracle", required: true, exit_code: 0, timed_out: timedOut }],
+    }));
+    const observation = observationFromRun({ projectRoot, task, condition: "baseline", runResult: { runDir, artifactsDir, receipt } });
+    if (timedOut) await assert.rejects(observation, /Verification gate and artifact disagree/);
+    else assert.equal((await observation).required_checks_passed, true);
+  }
+  receipt.usage_complete = false;
+  receipt.usage = null;
+  receipt.gates.verification.passed = false;
+  const unknownUsage = await observationFromRun({ projectRoot, task, condition: "baseline", runResult: { runDir, artifactsDir, receipt } });
+  assert.equal(unknownUsage.usage_complete, false);
+  assert.equal(unknownUsage.usage.cost_usd, null);
+});
+
+
+test("benchmark checkpoints functional outcomes with unknown review costs", async (t) => {
+  const projectRoot = await mkdtemp(path.join(os.tmpdir(), "pi-qodo-unknown-usage-"));
+  t.after(() => rm(projectRoot, { recursive: true, force: true }));
+  const suitePath = await writeCanonicalSuite(projectRoot, "unknown-usage-suite");
+  const result = await runBenchmark({
+    projectRoot, suitePath, config: {}, benchmarkId: "unknown-usage",
+    executeCondition: async ({ condition, task: taskValue }) => conditionResult(condition,
+      condition === "factory" ? {
+        usage_complete: false,
+        usage: { input_tokens: null, output_tokens: null, cost_usd: null, turns: null },
+      } : { usage_complete: true }, taskValue),
+  });
+  assert.equal(result.summary.complete, true);
+  assert.equal(result.summary.conditions.factory.completion_rate, 1);
+  assert.equal(result.summary.conditions.factory.usage_complete, false);
+  assert.equal(result.summary.conditions.factory.usage.cost_usd, null);
+  assert.equal(result.summary.paired.factory_minus_baseline.cost_usd, null);
+  const summaryBefore = await readFile(result.summaryPath, "utf8");
+  const resumed = await runBenchmark({ projectRoot, suitePath, config: {}, resumeDir: result.benchmarkDir,
+    executeCondition: async () => { throw new Error("Committed conditions must survive resume"); },
+  });
+  assert.equal(resumed.summary.completed_run_records, 10);
+  assert.equal(JSON.parse(summaryBefore).conditions.factory.usage_complete, false);
+});
+
+
+test("paired usage comparisons stay unknown when one task has incomplete usage", () => {
+  const records = [observation("baseline"), observation("factory"),
+    observation("baseline", { task_id: "other-task" }),
+    observation("factory", { task_id: "other-task", usage_complete: false,
+      usage: { input_tokens: null, output_tokens: null, cost_usd: null, turns: null } })];
+  const summary = summarizeBenchmark({ expected_runs: 4 }, records);
+  assert.equal(summary.conditions.factory.usage_complete, false);
+  for (const field of ["cost_usd", "input_tokens", "output_tokens"]) {
+    assert.equal(summary.paired.factory_minus_baseline[field], null);
+  }
+  const unrun = summarizeBenchmark({ expected_runs: 2 }, [observation("baseline")]);
+  assert.equal(unrun.conditions.factory.usage_complete, false);
+  assert.equal(unrun.conditions.factory.usage.cost_usd, null);
+});
+
+
+test("legacy benchmark records remain readable with unverified usage totals suppressed", () => {
+  const baseline = observation("baseline");
+  const factory = observation("factory");
+  delete factory.usage_complete;
+  const summary = summarizeBenchmark({ expected_runs: 2 }, [baseline, factory]);
+  assert.equal(summary.complete, true);
+  assert.equal(summary.conditions.factory.completion_rate, 1);
+  assert.equal(summary.conditions.factory.usage_complete, false);
+  assert.equal(summary.conditions.factory.usage.cost_usd, null);
+  assert.equal(summary.paired.factory_minus_baseline.cost_usd, null);
 });

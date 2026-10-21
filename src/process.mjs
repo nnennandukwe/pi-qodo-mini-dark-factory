@@ -8,6 +8,29 @@ function appendBounded(current, chunk) {
   return next.slice(next.length - OUTPUT_LIMIT);
 }
 
+export class IncompleteProcessEvidenceError extends Error {}
+
+export function assertCompleteOutput(result, label) {
+  if (result.timed_out) {
+    throw new IncompleteProcessEvidenceError(`${label} timed out; evidence is incomplete. Rerun within the deadline.`);
+  }
+  if (result.stdout_truncated || result.stderr_truncated) {
+    throw new IncompleteProcessEvidenceError(`${label} output exceeded the capture limit; evidence is incomplete. Reduce command output and rerun.`);
+  }
+}
+
+export function commandSucceeded(result) {
+  return result?.exit_code === 0 && !result.timed_out && !result.spawn_error &&
+    !result.stdout_truncated && !result.stderr_truncated;
+}
+
+export function commandFailure(result) {
+  if (result.timed_out) return "timed out; rerun within the deadline";
+  if (result.stdout_truncated || result.stderr_truncated) return "output exceeded the capture limit; reduce output and rerun";
+  if (result.spawn_error) return `couldn't start: ${result.spawn_error}; check the executable and rerun`;
+  return `exited ${result.exit_code}; fix the command failure and rerun`;
+}
+
 export async function runCommand(
   argv,
   {
@@ -26,6 +49,8 @@ export async function runCommand(
   const started = performance.now();
   let stdout = "";
   let stderr = "";
+  let stdoutTruncated = false;
+  let stderrTruncated = false;
   let timedOut = false;
   let spawnError = null;
 
@@ -49,13 +74,15 @@ export async function runCommand(
       setTimeout(() => child.kill("SIGKILL"), 2_000).unref();
     }, timeoutMs);
 
-    child.stdout.on("data", (chunk) => {
-      const text = chunk.toString();
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (text) => {
+      stdoutTruncated ||= stdout.length + text.length > OUTPUT_LIMIT;
       stdout = appendBounded(stdout, text);
       onStdout?.(text);
     });
-    child.stderr.on("data", (chunk) => {
-      const text = chunk.toString();
+    child.stderr.on("data", (text) => {
+      stderrTruncated ||= stderr.length + text.length > OUTPUT_LIMIT;
       stderr = appendBounded(stderr, text);
       onStderr?.(text);
     });
@@ -80,5 +107,7 @@ export async function runCommand(
     spawn_error: spawnError,
     stdout,
     stderr,
+    stdout_truncated: stdoutTruncated,
+    stderr_truncated: stderrTruncated,
   };
 }

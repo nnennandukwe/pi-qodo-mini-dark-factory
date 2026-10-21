@@ -8,7 +8,7 @@ import { observationFromRun, runBenchmark } from "./benchmark.mjs";
 import { validateTask } from "./contracts.mjs";
 import { runPilot } from "./controller.mjs";
 import { assertPiAvailable, PiRunner } from "./pi-runner.mjs";
-import { runCommand } from "./process.mjs";
+import { assertCompleteOutput, runCommand } from "./process.mjs";
 import { QodoReviewer } from "./qodo-runner.mjs";
 import { retryReview } from "./review-retry.mjs";
 import { ScriptedRunner } from "./scripted-runner.mjs";
@@ -43,6 +43,9 @@ Qodo options:
   --reviewer qodo       Use Qodo for semantic review after deterministic verification.
   --qodo-depth <level>  Reproducible review depth: fast (default) or deep.
   --qodo-bin <path>     Override the Qodo executable.
+
+Run options:
+  --quiet              Suppress the stdout receipt summary; errors and exit codes remain available.
 
 Retry options:
   --run-dir <path>      REVIEWER_FAILED run whose verified patch should be reviewed.
@@ -90,6 +93,10 @@ function parseFlags(tokens, command) {
     if (!token.startsWith("--")) throw new Error(`Unexpected argument: ${token}`);
     const name = token.slice(2);
     if (!allowed.has(name)) throw new Error(`Unknown option for ${command}: --${name}`);
+    if (name === "quiet") {
+      flags.quiet = true;
+      continue;
+    }
     const value = tokens[index + 1];
     if (!value || value.startsWith("--")) throw new Error(`Missing value for --${name}`);
     flags[name] = value;
@@ -103,6 +110,7 @@ async function makeRunner(flags, task) {
   if (runnerName === "scripted") {
     return {
       runnerName,
+      runtime: { node_version: process.version, pi_version: null },
       scenario: flags.scenario ?? "happy",
       runner: new ScriptedRunner({ scenario: flags.scenario ?? "happy" }),
     };
@@ -131,6 +139,7 @@ async function makeRunner(flags, task) {
     return {
       runnerName,
       reviewerName,
+      runtime: { node_version: process.version, pi_version: installed.cli_version, provider: flags.provider, model: flags.model, thinking: flags.thinking ?? "medium" },
       scenario: null,
       runner: new PiRunner({
         projectRoot,
@@ -167,6 +176,7 @@ async function runOnce(flags) {
       })}\n`,
     );
   }
+  if (!result.receipt.success) process.exitCode = 1;
   return result;
 }
 
@@ -189,7 +199,7 @@ async function acceptance() {
   const summary = {
     generated_at: new Date().toISOString(),
     node_version: process.version,
-    pi_version: (await assertPiAvailable()).cli_version,
+    pi_version: null,
     passed: results.every((result) => result.passed),
     scenarios: results,
   };
@@ -198,7 +208,7 @@ async function acceptance() {
   await mkdir(path.dirname(summaryPath), { recursive: true });
   await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify({ ...summary, evidence: summaryPath })}\n`);
-  if (!summary.passed) process.exitCode = 1;
+  process.exitCode = summary.passed ? 0 : 1;
 }
 
 async function baseline(flags) {
@@ -217,6 +227,7 @@ async function baseline(flags) {
   const result = await runBaseline({
     projectRoot,
     taskPath: path.resolve(flags.task ?? defaultTask),
+    runtime: { node_version: process.version, pi_version: installed.cli_version, provider: flags.provider, model: flags.model, thinking: flags.thinking ?? "medium" },
     runner,
   });
   process.stdout.write(
@@ -226,6 +237,7 @@ async function baseline(flags) {
       receipt: path.join(result.artifactsDir, "receipt.json"),
     })}\n`,
   );
+  if (!result.receipt.success) process.exitCode = 1;
 }
 
 async function benchmarkCommand(flags) {
@@ -243,6 +255,9 @@ async function benchmarkCommand(flags) {
     runCommand(["git", "status", "--porcelain"], { cwd: projectRoot }),
     runCommand([qodoBin, "--version"], { cwd: projectRoot }),
   ]);
+  for (const [result, label] of [[revision, "Git revision"], [status, "Git status"], [qodoVersion, "Qodo version"]]) {
+    assertCompleteOutput(result, label);
+  }
   if (revision.exit_code !== 0 || status.exit_code !== 0) {
     throw new Error("Benchmark requires a readable Git revision and worktree status");
   }
@@ -263,6 +278,7 @@ async function benchmarkCommand(flags) {
     qodoBin,
     depth: qodoDepth,
   });
+  const runtime = { node_version: process.version, pi_version: installed.cli_version, provider: flags.provider, model: flags.model, thinking };
   const result = await runBenchmark({
     projectRoot,
     suitePath: path.resolve(flags.suite ?? defaultBenchmarkSuite),
@@ -282,12 +298,13 @@ async function benchmarkCommand(flags) {
       process.stderr.write(`\n=== BENCHMARK CONDITION ===\n${JSON.stringify({ task_id: task.id, condition }, null, 2)}\n`);
       const runResult =
         condition === "baseline"
-          ? await runBaseline({ projectRoot, taskPath, runner })
+          ? await runBaseline({ projectRoot, taskPath, runner, runtime })
           : await runPilot({
               projectRoot,
               taskPath,
               runner,
               runnerName: "pi",
+              runtime,
               reviewer,
               reviewerName: "qodo",
             });
@@ -333,13 +350,17 @@ try {
     process.stdout.write(HELP);
   } else {
     if (!Object.hasOwn(COMMAND_FLAGS, command)) throw new Error(`Unknown command: ${command}`);
-    const flags = parseFlags(rest, command);
-    if (command === "acceptance") await acceptance();
-    else if (command === "baseline") await baseline(flags);
-    else if (command === "benchmark") await benchmarkCommand(flags);
-    else if (command === "run") await runOnce(flags);
-    else if (command === "retry-review") await retryReviewCommand(flags);
-    else throw new Error(`Unknown command: ${command}`);
+    if (rest.includes("--help") || rest.includes("-h")) {
+      process.stdout.write(HELP);
+    } else {
+      const flags = parseFlags(rest, command);
+      if (command === "acceptance") await acceptance();
+      else if (command === "baseline") await baseline(flags);
+      else if (command === "benchmark") await benchmarkCommand(flags);
+      else if (command === "run") await runOnce(flags);
+      else if (command === "retry-review") await retryReviewCommand(flags);
+      else throw new Error(`Unknown command: ${command}`);
+    }
   }
 } catch (error) {
   process.stderr.write(`Error: ${error instanceof Error ? error.message : String(error)}\nRun with --help for usage.\n`);

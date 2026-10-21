@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { runCommand } from "./process.mjs";
+import { assertCompleteOutput, runCommand } from "./process.mjs";
 
 const ROLE_TOOLS = Object.freeze({
   planner: ["read", "grep", "find", "ls"],
@@ -43,13 +43,16 @@ function assistantTextFromEvents(raw) {
     stopReason = event.message.stopReason ?? stopReason;
   }
 
+  const usageComplete = messages.length > 0 && messages.every((message) =>
+    [message.usage?.input, message.usage?.output, message.usage?.cost?.total]
+      .every((value) => Number.isFinite(value) && value >= 0));
   const last = messages.at(-1);
   const text = last?.content
     ?.filter((item) => item.type === "text")
     .map((item) => item.text)
     .join("\n")
     .trim();
-  return { text: text ?? "", usage, model, stop_reason: stopReason };
+  return { text: text ?? "", usage: usageComplete ? usage : null, usage_complete: usageComplete, model, stop_reason: stopReason };
 }
 
 function parseStrictJson(text, role) {
@@ -65,12 +68,13 @@ function parseStrictJson(text, role) {
 }
 
 export class PiRunner {
-  constructor({ projectRoot, provider, model, thinking = "medium", piBin = "pi" }) {
+  constructor({ projectRoot, provider, model, thinking = "medium", piBin = "pi", timeoutMs = 10 * 60_000 }) {
     this.projectRoot = projectRoot;
     this.provider = provider;
     this.model = model;
     this.thinking = thinking;
     this.piBin = piBin;
+    this.timeoutMs = timeoutMs;
   }
 
   async run(role, { cwd, input }) {
@@ -102,8 +106,9 @@ export class PiRunner {
     const command = await runCommand([this.piBin, ...args], {
       cwd,
       env: process.env,
-      timeoutMs: 10 * 60_000,
+      timeoutMs: this.timeoutMs,
     });
+    assertCompleteOutput(command, `${role} Pi`);
     const parsed = assistantTextFromEvents(command.stdout);
     if (command.exit_code !== 0 || parsed.stop_reason === "error" || parsed.stop_reason === "aborted") {
       throw new Error(
@@ -119,6 +124,7 @@ export class PiRunner {
         provider: this.provider ?? null,
         model: parsed.model ?? this.model ?? null,
         usage: parsed.usage,
+        usage_complete: parsed.usage_complete,
         command: {
           exit_code: command.exit_code,
           duration_ms: command.duration_ms,
@@ -134,6 +140,7 @@ export class PiRunner {
 
 export async function assertPiAvailable(piBin = "pi") {
   const version = await runCommand([piBin, "--version"]);
+  assertCompleteOutput(version, "Pi version");
   if (version.exit_code !== 0) throw new Error(`Pi is unavailable: ${version.stderr}`);
   const packageJson = JSON.parse(
     await readFile(path.join(path.dirname(process.execPath), "..", "lib", "node_modules", "@earendil-works", "pi-coding-agent", "package.json"), "utf8").catch(() => "{}"),

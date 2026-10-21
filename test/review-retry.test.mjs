@@ -377,3 +377,16 @@ test("failed stored verification evidence is rejected before review", async () =
   );
   assert.equal(reviewer.calls, 0);
 });
+
+test("review retry refuses saved timeout evidence before invoking the reviewer", async () => {
+  const source = await sourceRun();
+  const verificationPath = path.join(source.runDir, "artifacts/verification.json");
+  const verification = JSON.parse(await readFile(verificationPath, "utf8"));
+  verification.checks[0].timed_out = true;
+  verification.checks[0].exit_code = 0;
+  await writeFile(verificationPath, JSON.stringify(verification));
+  const reviewer = new FakeReviewer();
+  await assert.rejects(retryReview({ runDir: source.runDir, reviewer, reviewerName: "fake", reportProgress: false }), /Required verification evidence is not passing.*Rerun deterministic verification/);
+  assert.equal(reviewer.calls, 0);
+  await assert.rejects(access(path.join(source.runDir, "artifacts/review-attempts")), { code: "ENOENT" });
+});

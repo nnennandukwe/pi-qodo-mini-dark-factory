@@ -114,6 +114,7 @@ export class ScriptedRunner {
         scripted: true,
         scenario: this.scenario,
         duration_ms: Math.round(performance.now() - started),
+        usage_complete: true,
         usage: { input: 0, output: 0, cost_usd: 0, turns: 0 },
       },
     };

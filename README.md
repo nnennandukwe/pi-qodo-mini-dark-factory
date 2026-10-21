@@ -6,6 +6,14 @@ This repository tests one narrow question: does explicit role separation make an
 
 The controller separates planning, implementation, deterministic verification, and semantic review. Only the controller advances the workflow. The public Qodo path has completed one live end-to-end run against [`nnennandukwe/pi-qodo-quality-fixture`](https://github.com/nnennandukwe/pi-qodo-quality-fixture); that proves the integration path works, not that the workflow improves quality across tasks.
 
+## CLI and execution evidence
+
+Scripted acceptance runs without Pi or Qodo installed and records `pi_version: null`, since it doesn't use Pi. Live runs still require the documented runtime checks.
+
+Use `--help` on each command for usage. `run --quiet` suppresses the stdout receipt summary while preserving diagnostics and the receipt's failure exit code. `run` and `baseline` exit nonzero when their receipt reports failure; acceptance succeeds when all seven scenarios reach their expected outcomes.
+
+A command that exceeds its deadline produces failed or incomplete evidence even when its cleanup exits zero. Verification, review retry, comparison, and benchmark observations reject that evidence. Captures retain at most 262144 characters per stream and mark truncation; Git, Pi, and Qodo adapters reject truncated evidence before interpreting it. Failed agent stages record `usage_complete: false` and unknown usage. Comparisons suppress unknown usage and percentage changes; benchmarks retain functional results with unknown usage and suppress incomplete usage totals and comparisons. Each live receipt records the Pi version used by that run. Comparisons read runtime versions from those receipts. Older receipts and benchmark records without a completeness marker retain unknown usage. Existing saved evidence files stay intact.
+
 ## Architecture
 
 | Stage | Runtime | Authority |
