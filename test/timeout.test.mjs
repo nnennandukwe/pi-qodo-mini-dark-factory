@@ -48,6 +48,10 @@ for (const kind of ["controller", "baseline"]) {
       if (label.startsWith("timeout")) {
         assert.equal(verification.checks[0].exit_code, 0);
         assert.equal(verification.checks[0].timed_out, true);
+        const reasons = kind === "controller"
+          ? result.receipt.gates.find((gate) => gate.name === "verification").reasons
+          : result.receipt.gates.verification.reasons;
+        assert.match(reasons.join(" "), /timed out.*rerun/);
       }
       if (!success && kind === "controller") {
         assert.equal(result.receipt.terminal_status, "VERIFICATION_FAILED");
@@ -78,4 +82,48 @@ setInterval(() => {}, 1000);
       implementation: { summary: "Fixture" }, verification: { checks: [] },
     },
   }), /timed out; evidence is incomplete/);
+});
+
+for (const kind of ["controller", "baseline"]) {
+  test(`${kind} writes a failed receipt when a tracked patch exceeds capture limits`, async (t) => {
+    const workspace = await cliWorkspace(t);
+    const taskPath = path.join(workspace.cwd, "tasks/reject-expired-session-token.json");
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    task.verification = [{ id: "fast-check", argv: [process.execPath, "-e", "process.exit(0)"], required: true }];
+    await writeFile(taskPath, JSON.stringify(task));
+    const scripted = new ScriptedRunner();
+    const runner = { run: async (role, context) => {
+      const result = await scripted.run(role === "baseline" ? "implementer" : role, context);
+      if (role === "implementer" || role === "baseline") {
+        await writeFile(path.join(context.cwd, "src/session.ts"), "// oversized tracked change\n".repeat(20000));
+      }
+      return result;
+    } };
+    const result = kind === "controller"
+      ? await runPilot({ projectRoot: workspace.cwd, taskPath, runner, runnerName: "scripted" })
+      : await runBaseline({ projectRoot: workspace.cwd, taskPath, runner });
+    assert.equal(result.receipt.success, false);
+    assert.match(result.receipt.recovery, /Reduce command output|smaller patch/);
+    const persisted = JSON.parse(await readFile(path.join(result.artifactsDir, "receipt.json"), "utf8"));
+    assert.equal(persisted.success, false);
+    assert.match(JSON.stringify(persisted), /capture limit/);
+    await assert.rejects(access(path.join(result.artifactsDir, "review.json")), { code: "ENOENT" });
+  });
+}
+
+test("an unmetered reviewer leaves successful workflow usage unknown", async (t) => {
+  const workspace = await cliWorkspace(t);
+  const scripted = new ScriptedRunner();
+  const reviewer = { run: async (role, context) => {
+    const result = await scripted.run(role, context);
+    return { ...result, evidence: { ...result.evidence, provider: "qodo", usage: null, usage_complete: false } };
+  } };
+  const result = await runPilot({
+    projectRoot: workspace.cwd,
+    taskPath: path.join(workspace.cwd, "tasks/reject-expired-session-token.json"),
+    runner: scripted, runnerName: "scripted", reviewer, reviewerName: "qodo",
+  });
+  assert.equal(result.receipt.success, true);
+  assert.equal(result.receipt.usage_complete, false);
+  assert.equal(result.receipt.usage, null);
 });

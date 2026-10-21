@@ -8,18 +8,27 @@ function appendBounded(current, chunk) {
   return next.slice(next.length - OUTPUT_LIMIT);
 }
 
+export class IncompleteProcessEvidenceError extends Error {}
+
 export function assertCompleteOutput(result, label) {
   if (result.timed_out) {
-    throw new Error(`${label} timed out; evidence is incomplete. Rerun within the deadline.`);
+    throw new IncompleteProcessEvidenceError(`${label} timed out; evidence is incomplete. Rerun within the deadline.`);
   }
   if (result.stdout_truncated || result.stderr_truncated) {
-    throw new Error(`${label} output exceeded the capture limit; evidence is incomplete. Reduce command output and rerun.`);
+    throw new IncompleteProcessEvidenceError(`${label} output exceeded the capture limit; evidence is incomplete. Reduce command output and rerun.`);
   }
 }
 
 export function commandSucceeded(result) {
   return result?.exit_code === 0 && !result.timed_out && !result.spawn_error &&
     !result.stdout_truncated && !result.stderr_truncated;
+}
+
+export function commandFailure(result) {
+  if (result.timed_out) return "timed out; rerun within the deadline";
+  if (result.stdout_truncated || result.stderr_truncated) return "output exceeded the capture limit; reduce output and rerun";
+  if (result.spawn_error) return `couldn't start: ${result.spawn_error}; check the executable and rerun`;
+  return `exited ${result.exit_code}; fix the command failure and rerun`;
 }
 
 export async function runCommand(

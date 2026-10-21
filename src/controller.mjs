@@ -10,7 +10,8 @@ import {
   validateTask,
 } from "./contracts.mjs";
 import { changedFiles, patchEvidence, prepareTaskRepository } from "./git.mjs";
-import { commandSucceeded, runCommand } from "./process.mjs";
+import { commandFailure, commandSucceeded, IncompleteProcessEvidenceError, runCommand } from "./process.mjs";
+import { hasCompleteUsage } from "./usage.mjs";
 import { createRunState, transition } from "./state-machine.mjs";
 
 function safeTimestamp() {
@@ -78,6 +79,7 @@ export async function runPilot({
   reviewer = null,
   reviewerName = null,
   scenario = null,
+  runtime = null,
   verificationTimeoutMs = 180_000,
 }) {
   const startedAt = new Date().toISOString();
@@ -99,6 +101,7 @@ export async function runPilot({
   const gates = [];
   const agentEvidence = {};
   let verifiedSubject = null;
+  let recovery = null;
   let timeToVerificationMs = null;
   let verificationCommandsDurationMs = null;
   let reviewTimeMs = null;
@@ -120,7 +123,8 @@ export async function runPilot({
   };
   const finish = async () => {
     const finishedAt = new Date().toISOString();
-    const usageComplete = !gates.some((decision) => decision.name.endsWith("_runtime") && !decision.passed);
+    const usageComplete = !gates.some((decision) => decision.name.endsWith("_runtime") && !decision.passed) &&
+      Object.values(agentEvidence).every(hasCompleteUsage);
     const receipt = {
       schema_version: "mini-dark-factory-receipt/v2",
       run_id: runId,
@@ -128,6 +132,8 @@ export async function runPilot({
       runner: runnerName,
       reviewer: reviewerName ?? runnerName,
       scenario,
+      runtime,
+      recovery,
       terminal_status: state.status,
       success: state.status === "COMPLETE",
       started_at: startedAt,
@@ -148,200 +154,212 @@ export async function runPilot({
     return { receipt, runDir, repoDir, artifactsDir };
   };
 
-  renderState(state);
-  move("START_PLANNING");
-  let plannerResult;
   try {
-    plannerResult = await runner.run("planner", { cwd: repoDir, input: { task } });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    gate("planner_runtime", false, [reason]);
-    move("AGENT_FAILED", { role: "planner", reason });
-    return finish();
-  }
-  agentEvidence.planner = plannerResult.evidence;
-  await writeJson(path.join(artifactsDir, "plan.json"), plannerResult.output);
-  await writeJson(path.join(agentsDir, "planner.json"), plannerResult.evidence);
-  const planContract = validatePlan(plannerResult.output, task);
-  gate("planner", planContract.ok, planContract.errors, {
-    artifact: "artifacts/plan.json",
-    mutation_tools_available: false,
-  });
-  if (!planContract.ok) {
-    move("PLAN_REJECTED", { reasons: planContract.errors });
-    return finish();
-  }
-  move("PLAN_ACCEPTED");
-
-  move("START_IMPLEMENTATION");
-  let implementerResult;
-  try {
-    implementerResult = await runner.run("implementer", {
-      cwd: repoDir,
-      input: { task, approved_plan: plannerResult.output },
+    renderState(state);
+    move("START_PLANNING");
+    let plannerResult;
+    try {
+      plannerResult = await runner.run("planner", { cwd: repoDir, input: { task } });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      gate("planner_runtime", false, [reason]);
+      move("AGENT_FAILED", { role: "planner", reason });
+      return finish();
+    }
+    agentEvidence.planner = plannerResult.evidence;
+    await writeJson(path.join(artifactsDir, "plan.json"), plannerResult.output);
+    await writeJson(path.join(agentsDir, "planner.json"), plannerResult.evidence);
+    const planContract = validatePlan(plannerResult.output, task);
+    gate("planner", planContract.ok, planContract.errors, {
+      artifact: "artifacts/plan.json",
+      mutation_tools_available: false,
     });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    gate("implementer_runtime", false, [reason]);
-    move("AGENT_FAILED", { role: "implementer", reason });
-    return finish();
-  }
-  agentEvidence.implementer = implementerResult.evidence;
-  await writeJson(path.join(artifactsDir, "implementation.json"), implementerResult.output);
-  await writeJson(path.join(agentsDir, "implementer.json"), implementerResult.evidence);
-  const actualChangedFiles = await changedFiles(repoDir, baseSha);
-  const implementationContract = validateImplementationReport(
-    implementerResult.output,
-    task,
-    actualChangedFiles,
-  );
-  gate("implementation", implementationContract.ok, implementationContract.errors, {
-    artifact: "artifacts/implementation.json",
-    actual_changed_files: actualChangedFiles,
-    allowed_files: task.files_allowed,
-  });
-  if (!implementationContract.ok) {
-    move("IMPLEMENTATION_REJECTED", { reasons: implementationContract.errors });
-    return finish();
-  }
-  move("IMPLEMENTATION_ACCEPTED");
+    if (!planContract.ok) {
+      move("PLAN_REJECTED", { reasons: planContract.errors });
+      return finish();
+    }
+    move("PLAN_ACCEPTED");
 
-  move("START_VERIFICATION");
-  const toolPath = path.join(projectRoot, "node_modules", ".bin");
-  const verificationEnv = { ...process.env, PATH: `${toolPath}:${process.env.PATH ?? ""}` };
-  const checks = [];
-  const verificationStarted = performance.now();
-  for (const check of task.verification) {
-    const argv = check.argv.map((part) => part.replaceAll("{harness_root}", projectRoot));
-    const command = await runCommand(argv, {
-      cwd: repoDir,
-      env: verificationEnv,
-      timeoutMs: verificationTimeoutMs,
+    move("START_IMPLEMENTATION");
+    let implementerResult;
+    try {
+      implementerResult = await runner.run("implementer", {
+        cwd: repoDir,
+        input: { task, approved_plan: plannerResult.output },
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      gate("implementer_runtime", false, [reason]);
+      move("AGENT_FAILED", { role: "implementer", reason });
+      return finish();
+    }
+    agentEvidence.implementer = implementerResult.evidence;
+    await writeJson(path.join(artifactsDir, "implementation.json"), implementerResult.output);
+    await writeJson(path.join(agentsDir, "implementer.json"), implementerResult.evidence);
+    const actualChangedFiles = await changedFiles(repoDir, baseSha);
+    const implementationContract = validateImplementationReport(
+      implementerResult.output,
+      task,
+      actualChangedFiles,
+    );
+    gate("implementation", implementationContract.ok, implementationContract.errors, {
+      artifact: "artifacts/implementation.json",
+      actual_changed_files: actualChangedFiles,
+      allowed_files: task.files_allowed,
     });
-    checks.push({ id: check.id, required: check.required, ...command });
-  }
-  verificationCommandsDurationMs = Math.round(performance.now() - verificationStarted);
-  timeToVerificationMs = Math.round(performance.now() - started);
-  const evidence = await patchEvidence(repoDir, baseSha);
-  await writeFile(path.join(artifactsDir, "diff.patch"), evidence.patch);
-  const verification = {
-    task_id: task.id,
-    base_sha: baseSha,
-    patch_digest: evidence.digest,
-    changed_files: await changedFiles(repoDir, baseSha),
-    checks,
-  };
-  await writeJson(path.join(artifactsDir, "verification.json"), verification);
-  const failedRequired = checks.filter((check) => check.required && !commandSucceeded(check));
-  gate(
-    "verification",
-    failedRequired.length === 0,
-    failedRequired.map((check) => `${check.id} exited ${check.exit_code}`),
-    {
-      artifact: "artifacts/verification.json",
-      required_checks: checks.filter((check) => check.required).map((check) => check.id),
-      patch_digest: evidence.digest,
-    },
-  );
-  if (failedRequired.length > 0) {
-    move("VERIFICATION_FAILED", { failed_checks: failedRequired.map((check) => check.id) });
-    return finish();
-  }
-  verifiedSubject = {
-    base_sha: baseSha,
-    patch_digest: evidence.digest,
-    changed_files: verification.changed_files,
-  };
-  move("VERIFICATION_PASSED");
+    if (!implementationContract.ok) {
+      move("IMPLEMENTATION_REJECTED", { reasons: implementationContract.errors });
+      return finish();
+    }
+    move("IMPLEMENTATION_ACCEPTED");
 
-  if (typeof runner.afterVerification === "function") {
-    await runner.afterVerification({ cwd: repoDir, task, verifiedSubject });
-  }
-  const currentEvidence = await patchEvidence(repoDir, baseSha);
-  if (currentEvidence.digest !== verifiedSubject.patch_digest) {
-    gate("evidence_freshness", false, ["patch changed after verification"], {
-      verified_patch_digest: verifiedSubject.patch_digest,
-      current_patch_digest: currentEvidence.digest,
-    });
-    move("EVIDENCE_INVALIDATED", { current_patch_digest: currentEvidence.digest });
-    return finish();
-  }
-  gate("evidence_freshness", true, [], { patch_digest: currentEvidence.digest });
-
-  move("START_REVIEW");
-  const reviewStarted = performance.now();
-  let reviewerResult;
-  try {
-    reviewerResult = await (reviewer ?? runner).run("reviewer", {
-      cwd: repoDir,
-      artifactsDir: agentsDir,
-      input: {
-        task,
-        approved_plan: plannerResult.output,
-        implementation: implementerResult.output,
-        verification,
-        diff: evidence.patch,
+    move("START_VERIFICATION");
+    const toolPath = path.join(projectRoot, "node_modules", ".bin");
+    const verificationEnv = { ...process.env, PATH: `${toolPath}:${process.env.PATH ?? ""}` };
+    const checks = [];
+    const verificationStarted = performance.now();
+    for (const check of task.verification) {
+      const argv = check.argv.map((part) => part.replaceAll("{harness_root}", projectRoot));
+      const command = await runCommand(argv, {
+        cwd: repoDir,
+        env: verificationEnv,
+        timeoutMs: verificationTimeoutMs,
+      });
+      checks.push({ id: check.id, required: check.required, ...command });
+    }
+    verificationCommandsDurationMs = Math.round(performance.now() - verificationStarted);
+    timeToVerificationMs = Math.round(performance.now() - started);
+    const verification = {
+      task_id: task.id, base_sha: baseSha, patch_digest: null,
+      changed_files: actualChangedFiles, checks, evidence_complete: false,
+    };
+    await writeJson(path.join(artifactsDir, "verification.json"), verification);
+    const evidence = await patchEvidence(repoDir, baseSha);
+    await writeFile(path.join(artifactsDir, "diff.patch"), evidence.patch);
+    verification.patch_digest = evidence.digest;
+    verification.changed_files = await changedFiles(repoDir, baseSha);
+    verification.evidence_complete = true;
+    await writeJson(path.join(artifactsDir, "verification.json"), verification);
+    const failedRequired = checks.filter((check) => check.required && !commandSucceeded(check));
+    gate(
+      "verification",
+      failedRequired.length === 0,
+      failedRequired.map((check) => `${check.id}: ${commandFailure(check)}`),
+      {
+        artifact: "artifacts/verification.json",
+        required_checks: checks.filter((check) => check.required).map((check) => check.id),
+        patch_digest: evidence.digest,
       },
-    });
-  } catch (error) {
+    );
+    if (failedRequired.length > 0) {
+      move("VERIFICATION_FAILED", { failed_checks: failedRequired.map((check) => check.id) });
+      return finish();
+    }
+    verifiedSubject = {
+      base_sha: baseSha,
+      patch_digest: evidence.digest,
+      changed_files: verification.changed_files,
+    };
+    move("VERIFICATION_PASSED");
+
+    if (typeof runner.afterVerification === "function") {
+      await runner.afterVerification({ cwd: repoDir, task, verifiedSubject });
+    }
+    const currentEvidence = await patchEvidence(repoDir, baseSha);
+    if (currentEvidence.digest !== verifiedSubject.patch_digest) {
+      gate("evidence_freshness", false, ["patch changed after verification"], {
+        verified_patch_digest: verifiedSubject.patch_digest,
+        current_patch_digest: currentEvidence.digest,
+      });
+      move("EVIDENCE_INVALIDATED", { current_patch_digest: currentEvidence.digest });
+      return finish();
+    }
+    gate("evidence_freshness", true, [], { patch_digest: currentEvidence.digest });
+
+    move("START_REVIEW");
+    const reviewStarted = performance.now();
+    let reviewerResult;
+    try {
+      reviewerResult = await (reviewer ?? runner).run("reviewer", {
+        cwd: repoDir,
+        artifactsDir: agentsDir,
+        input: {
+          task,
+          approved_plan: plannerResult.output,
+          implementation: implementerResult.output,
+          verification,
+          diff: evidence.patch,
+        },
+      });
+    } catch (error) {
+      reviewTimeMs = Math.round(performance.now() - reviewStarted);
+      const reason = error instanceof Error ? error.message : String(error);
+      gate("reviewer_runtime", false, [reason]);
+      const reviewedEvidence = await patchEvidence(repoDir, baseSha);
+      if (reviewedEvidence.digest !== verifiedSubject.patch_digest) {
+        gate("evidence_freshness_after_review", false, ["patch changed during failed review"], {
+          verified_patch_digest: verifiedSubject.patch_digest,
+          current_patch_digest: reviewedEvidence.digest,
+        });
+        move("EVIDENCE_INVALIDATED", {
+          current_patch_digest: reviewedEvidence.digest,
+          reviewer_error: reason,
+        });
+        return finish();
+      }
+      gate("evidence_freshness_after_review", true, [], {
+        patch_digest: reviewedEvidence.digest,
+      });
+      move("AGENT_FAILED", { role: "reviewer", reason });
+      return finish();
+    }
     reviewTimeMs = Math.round(performance.now() - reviewStarted);
-    const reason = error instanceof Error ? error.message : String(error);
-    gate("reviewer_runtime", false, [reason]);
+    agentEvidence.reviewer = reviewerResult.evidence;
+    await writeJson(path.join(artifactsDir, "review.json"), reviewerResult.output);
+    await writeJson(path.join(agentsDir, "reviewer.json"), reviewerResult.evidence);
     const reviewedEvidence = await patchEvidence(repoDir, baseSha);
     if (reviewedEvidence.digest !== verifiedSubject.patch_digest) {
-      gate("evidence_freshness_after_review", false, ["patch changed during failed review"], {
+      gate("evidence_freshness_after_review", false, ["patch changed during review"], {
         verified_patch_digest: verifiedSubject.patch_digest,
         current_patch_digest: reviewedEvidence.digest,
       });
-      move("EVIDENCE_INVALIDATED", {
-        current_patch_digest: reviewedEvidence.digest,
-        reviewer_error: reason,
-      });
+      move("EVIDENCE_INVALIDATED", { current_patch_digest: reviewedEvidence.digest });
       return finish();
     }
     gate("evidence_freshness_after_review", true, [], {
       patch_digest: reviewedEvidence.digest,
     });
-    move("AGENT_FAILED", { role: "reviewer", reason });
-    return finish();
-  }
-  reviewTimeMs = Math.round(performance.now() - reviewStarted);
-  agentEvidence.reviewer = reviewerResult.evidence;
-  await writeJson(path.join(artifactsDir, "review.json"), reviewerResult.output);
-  await writeJson(path.join(agentsDir, "reviewer.json"), reviewerResult.evidence);
-  const reviewedEvidence = await patchEvidence(repoDir, baseSha);
-  if (reviewedEvidence.digest !== verifiedSubject.patch_digest) {
-    gate("evidence_freshness_after_review", false, ["patch changed during review"], {
-      verified_patch_digest: verifiedSubject.patch_digest,
-      current_patch_digest: reviewedEvidence.digest,
-    });
-    move("EVIDENCE_INVALIDATED", { current_patch_digest: reviewedEvidence.digest });
-    return finish();
-  }
-  gate("evidence_freshness_after_review", true, [], {
-    patch_digest: reviewedEvidence.digest,
-  });
-  const reviewContract = validateReview(reviewerResult.output, task);
-  if (!reviewContract.ok) {
-    gate("review", false, reviewContract.errors, { artifact: "artifacts/review.json" });
-    move("REVIEW_REJECTED", { reasons: reviewContract.errors });
-    return finish();
-  }
-  const semanticGate = reviewGate(reviewerResult.output);
-  gate("review", semanticGate.passed, semanticGate.reasons, {
-    artifact: "artifacts/review.json",
-    mutation_tools_available: false,
-    decision: reviewerResult.output.decision,
-  });
-  if (!semanticGate.passed) {
-    if (reviewerResult.output.decision === "request_changes") {
-      move("REVIEW_CHANGES_REQUESTED", { reasons: semanticGate.reasons });
-    } else {
-      move("REVIEW_REJECTED", { reasons: semanticGate.reasons });
+    const reviewContract = validateReview(reviewerResult.output, task);
+    if (!reviewContract.ok) {
+      gate("review", false, reviewContract.errors, { artifact: "artifacts/review.json" });
+      move("REVIEW_REJECTED", { reasons: reviewContract.errors });
+      return finish();
     }
+    const semanticGate = reviewGate(reviewerResult.output);
+    gate("review", semanticGate.passed, semanticGate.reasons, {
+      artifact: "artifacts/review.json",
+      mutation_tools_available: false,
+      decision: reviewerResult.output.decision,
+    });
+    if (!semanticGate.passed) {
+      if (reviewerResult.output.decision === "request_changes") {
+        move("REVIEW_CHANGES_REQUESTED", { reasons: semanticGate.reasons });
+      } else {
+        move("REVIEW_REJECTED", { reasons: semanticGate.reasons });
+      }
+      return finish();
+    }
+
+    move("REVIEW_APPROVED");
+    return finish();
+  } catch (error) {
+    if (!(error instanceof IncompleteProcessEvidenceError)) throw error;
+    recovery = "Reduce command output or use a smaller patch, then rerun implementation and verification.";
+    gate("execution_evidence", false, [error.message], { recovery });
+    verifiedSubject = null;
+    const event = state.status === "IMPLEMENTING" ? "IMPLEMENTATION_REJECTED"
+      : state.status === "VERIFYING" ? "VERIFICATION_FAILED" : "EVIDENCE_INVALIDATED";
+    move(event, { reason: error.message });
     return finish();
   }
-
-  move("REVIEW_APPROVED");
-  return finish();
 }

@@ -228,7 +228,8 @@ export class QodoReviewer {
         review_depth: this.depth,
         base_ref: input.task.repository.base_ref,
         repository: input.task.repository.repo_full_name,
-        usage: { input: 0, output: 0, cost_usd: 0, turns: 0 },
+        usage: null,
+        usage_complete: false,
         command: {
           exit_code: command.exit_code,
           duration_ms: command.duration_ms,

@@ -110,6 +110,7 @@ async function makeRunner(flags, task) {
   if (runnerName === "scripted") {
     return {
       runnerName,
+      runtime: { node_version: process.version, pi_version: null },
       scenario: flags.scenario ?? "happy",
       runner: new ScriptedRunner({ scenario: flags.scenario ?? "happy" }),
     };
@@ -138,6 +139,7 @@ async function makeRunner(flags, task) {
     return {
       runnerName,
       reviewerName,
+      runtime: { node_version: process.version, pi_version: installed.cli_version, provider: flags.provider, model: flags.model, thinking: flags.thinking ?? "medium" },
       scenario: null,
       runner: new PiRunner({
         projectRoot,
@@ -225,6 +227,7 @@ async function baseline(flags) {
   const result = await runBaseline({
     projectRoot,
     taskPath: path.resolve(flags.task ?? defaultTask),
+    runtime: { node_version: process.version, pi_version: installed.cli_version, provider: flags.provider, model: flags.model, thinking: flags.thinking ?? "medium" },
     runner,
   });
   process.stdout.write(
@@ -275,6 +278,7 @@ async function benchmarkCommand(flags) {
     qodoBin,
     depth: qodoDepth,
   });
+  const runtime = { node_version: process.version, pi_version: installed.cli_version, provider: flags.provider, model: flags.model, thinking };
   const result = await runBenchmark({
     projectRoot,
     suitePath: path.resolve(flags.suite ?? defaultBenchmarkSuite),
@@ -294,12 +298,13 @@ async function benchmarkCommand(flags) {
       process.stderr.write(`\n=== BENCHMARK CONDITION ===\n${JSON.stringify({ task_id: task.id, condition }, null, 2)}\n`);
       const runResult =
         condition === "baseline"
-          ? await runBaseline({ projectRoot, taskPath, runner })
+          ? await runBaseline({ projectRoot, taskPath, runner, runtime })
           : await runPilot({
               projectRoot,
               taskPath,
               runner,
               runnerName: "pi",
+              runtime,
               reviewer,
               reviewerName: "qodo",
             });

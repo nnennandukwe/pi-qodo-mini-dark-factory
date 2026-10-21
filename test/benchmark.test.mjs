@@ -809,5 +809,33 @@ test("run observation rejects a saved timeout that contradicts a passing gate", 
   receipt.usage_complete = false;
   receipt.usage = null;
   receipt.gates.verification.passed = false;
-  await assert.rejects(observationFromRun({ projectRoot, task, condition: "baseline", runResult: { runDir, artifactsDir, receipt } }), /Usage evidence is incomplete/);
+  const unknownUsage = await observationFromRun({ projectRoot, task, condition: "baseline", runResult: { runDir, artifactsDir, receipt } });
+  assert.equal(unknownUsage.usage_complete, false);
+  assert.equal(unknownUsage.usage.cost_usd, null);
+});
+
+
+test("benchmark checkpoints functional outcomes with unknown review costs", async (t) => {
+  const projectRoot = await mkdtemp(path.join(os.tmpdir(), "pi-qodo-unknown-usage-"));
+  t.after(() => rm(projectRoot, { recursive: true, force: true }));
+  const suitePath = await writeCanonicalSuite(projectRoot, "unknown-usage-suite");
+  const result = await runBenchmark({
+    projectRoot, suitePath, config: {}, benchmarkId: "unknown-usage",
+    executeCondition: async ({ condition, task: taskValue }) => conditionResult(condition,
+      condition === "factory" ? {
+        usage_complete: false,
+        usage: { input_tokens: null, output_tokens: null, cost_usd: null, turns: null },
+      } : { usage_complete: true }, taskValue),
+  });
+  assert.equal(result.summary.complete, true);
+  assert.equal(result.summary.conditions.factory.completion_rate, 1);
+  assert.equal(result.summary.conditions.factory.usage_complete, false);
+  assert.equal(result.summary.conditions.factory.usage.cost_usd, null);
+  assert.equal(result.summary.paired.factory_minus_baseline.cost_usd, null);
+  const summaryBefore = await readFile(result.summaryPath, "utf8");
+  const resumed = await runBenchmark({ projectRoot, suitePath, config: {}, resumeDir: result.benchmarkDir,
+    executeCondition: async () => { throw new Error("Committed conditions must survive resume"); },
+  });
+  assert.equal(resumed.summary.completed_run_records, 10);
+  assert.equal(JSON.parse(summaryBefore).conditions.factory.usage_complete, false);
 });

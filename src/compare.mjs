@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { hasCompleteUsage } from "./usage.mjs";
 import { commandSucceeded } from "./process.mjs";
 
 const HELP = `Usage: node src/compare.mjs --multi <receipt> --baseline <receipt> --output <json>
@@ -47,19 +48,21 @@ async function main(tokens) {
   const multiPath = path.resolve(flags.multi);
   const baselinePath = path.resolve(flags.baseline);
   const [multi, baseline] = await Promise.all([readJson(multiPath), readJson(baselinePath)]);
-  const multiUsage = multi.usage_complete !== false ? multi.usage : null;
-  const baselineUsage = baseline.usage_complete !== false ? baseline.usage : null;
-  const multiVerification = await readJson(
-    path.join(path.dirname(path.dirname(multiPath)), multi.artifact_paths.verification),
-  );
-  const baselineVerification = await readJson(
-    path.join(path.dirname(path.dirname(baselinePath)), baseline.artifact_paths.verification),
-  );
+  const multiUsage = hasCompleteUsage(multi) ? multi.usage : null;
+  const baselineUsage = hasCompleteUsage(baseline) ? baseline.usage : null;
+  const verificationFor = async (receipt, receiptPath) => receipt.artifact_paths?.verification
+    ? readJson(path.join(path.dirname(path.dirname(receiptPath)), receipt.artifact_paths.verification))
+    : { checks: [], evidence_complete: false };
+  const [multiVerification, baselineVerification] = await Promise.all([
+    verificationFor(multi, multiPath), verificationFor(baseline, baselinePath),
+  ]);
   const acceptance = await readJson(path.resolve("evidence/v1/scripted-acceptance.json"));
-
-  const requiredChecksPassed = (verification) =>
+  const requiredChecksPassed = (verification) => verification.evidence_complete !== false &&
+    Array.isArray(verification.checks) && verification.checks.length > 0 &&
     verification.checks.every((check) => !check.required || commandSucceeded(check));
-  const multiAllGatesPassed = multi.gates.every((gate) => gate.passed);
+  const multiAllGatesPassed = Array.isArray(multi.gates) && multi.gates.every((gate) => gate.passed);
+  const sharedRuntime = (field) => multi.runtime?.[field] != null && multi.runtime[field] === baseline.runtime?.[field]
+    ? multi.runtime[field] : null;
   const graduate =
     acceptance.passed &&
     multi.success &&
@@ -73,14 +76,15 @@ async function main(tokens) {
     generated_at: new Date().toISOString(),
     task_id: multi.task_id,
     pinned_runtime: {
-      node: acceptance.node_version,
-      pi: acceptance.pi_version,
-      provider: "openai-codex",
-      model: "gpt-5.5",
-      thinking: "medium",
+      node: sharedRuntime("node_version"),
+      pi: sharedRuntime("pi_version"),
+      provider: sharedRuntime("provider"),
+      model: sharedRuntime("model"),
+      thinking: sharedRuntime("thinking"),
     },
     multi_agent: {
       run_id: multi.run_id,
+      runtime: multi.runtime ?? null,
       terminal_status: multi.terminal_status,
       wall_time_ms: multi.wall_time_ms,
       usage_complete: multiUsage != null,
@@ -88,13 +92,14 @@ async function main(tokens) {
       input_tokens: multiUsage?.input_tokens ?? null,
       output_tokens: multiUsage?.output_tokens ?? null,
       turns: multiUsage?.turns ?? null,
-      changed_files: multi.verified_subject.changed_files,
+      changed_files: multi.verified_subject?.changed_files ?? [],
       structured_plan: true,
       independent_review: true,
       required_checks_passed: requiredChecksPassed(multiVerification),
     },
     one_agent: {
       run_id: baseline.run_id,
+      runtime: baseline.runtime ?? null,
       terminal_status: baseline.terminal_status,
       wall_time_ms: baseline.wall_time_ms,
       usage_complete: baselineUsage != null,
@@ -102,7 +107,7 @@ async function main(tokens) {
       input_tokens: baselineUsage?.input ?? null,
       output_tokens: baselineUsage?.output ?? null,
       turns: baselineUsage?.turns ?? null,
-      changed_files: baseline.verified_subject.changed_files,
+      changed_files: baseline.verified_subject?.changed_files ?? [],
       structured_plan: false,
       independent_review: false,
       required_checks_passed: requiredChecksPassed(baselineVerification),

@@ -117,6 +117,7 @@ test("oversized review leaves usage unknown in the receipt and comparison", asyn
     const receipt = JSON.parse(await readFile(summary.receipt, "utf8"));
     assert.equal(receipt.terminal_status, status);
     assert.equal(receipt.usage_complete, exit === 0);
+    assert.equal(receipt.runtime.pi_version, "fixture-pi");
     if (exit) {
       assert.equal(receipt.usage, null);
       assert.match(receipt.gates.find((gate) => gate.name === "reviewer_runtime").reasons[0], /capture limit/);
@@ -129,6 +130,19 @@ test("oversized review leaves usage unknown in the receipt and comparison", asyn
     assert.equal(comparisonCommand.exit_code, 0, comparisonCommand.stderr);
     const comparison = JSON.parse(await readFile(output, "utf8"));
     assert.equal(comparison.multi_agent.usage_complete, exit === 0);
+    assert.equal(comparison.pinned_runtime.pi, "fixture-pi");
+    const legacyReceipt = { ...receipt };
+    delete legacyReceipt.usage_complete;
+    legacyReceipt.usage = { input_tokens: 999, output_tokens: 999, cost_usd: 999, turns: 999 };
+    const legacyPath = path.join(path.dirname(summary.receipt), "legacy-receipt.json");
+    await writeFile(legacyPath, JSON.stringify(legacyReceipt));
+    const legacyOutput = path.join(workspace.cwd, `${scenario}-legacy-comparison.json`);
+    const legacyResult = await runCommand([process.execPath, "src/compare.mjs", "--multi", legacyPath, "--baseline", baselinePath, "--output", legacyOutput], workspace);
+    assert.equal(legacyResult.exit_code, 0, legacyResult.stderr);
+    const legacyComparison = JSON.parse(await readFile(legacyOutput, "utf8"));
+    assert.equal(legacyComparison.multi_agent.usage_complete, false);
+    assert.equal(legacyComparison.multi_agent.cost_usd, null);
+    assert.equal(legacyComparison.overhead.cost_percent, null);
     if (exit) {
       assert.equal(comparison.multi_agent.cost_usd, null);
       assert.equal(comparison.multi_agent.input_tokens, null);

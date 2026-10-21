@@ -43,13 +43,16 @@ function assistantTextFromEvents(raw) {
     stopReason = event.message.stopReason ?? stopReason;
   }
 
+  const usageComplete = messages.length > 0 && messages.every((message) =>
+    [message.usage?.input, message.usage?.output, message.usage?.cost?.total]
+      .every((value) => Number.isFinite(value) && value >= 0));
   const last = messages.at(-1);
   const text = last?.content
     ?.filter((item) => item.type === "text")
     .map((item) => item.text)
     .join("\n")
     .trim();
-  return { text: text ?? "", usage, model, stop_reason: stopReason };
+  return { text: text ?? "", usage: usageComplete ? usage : null, usage_complete: usageComplete, model, stop_reason: stopReason };
 }
 
 function parseStrictJson(text, role) {
@@ -121,6 +124,7 @@ export class PiRunner {
         provider: this.provider ?? null,
         model: parsed.model ?? this.model ?? null,
         usage: parsed.usage,
+        usage_complete: parsed.usage_complete,
         command: {
           exit_code: command.exit_code,
           duration_ms: command.duration_ms,

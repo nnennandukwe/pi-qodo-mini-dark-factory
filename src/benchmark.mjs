@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { hasCompleteUsage } from "./usage.mjs";
 import { commandSucceeded } from "./process.mjs";
 import { validateTask } from "./contracts.mjs";
 
@@ -286,6 +287,7 @@ export async function atomicWriteJson(
 
 function conditionSummary(records, condition) {
   const selected = records.filter((record) => record.condition === condition);
+  const usageComplete = selected.every((record) => record.usage_complete !== false);
   const completed = selected.filter((record) => record.success).length;
   const checksPassed = selected.filter((record) => record.required_checks_passed).length;
   const passingVerificationTimes = selected
@@ -304,11 +306,12 @@ function conditionSummary(records, condition) {
     ),
     mean_wall_time_ms: mean(selected.map((record) => record.wall_time_ms)),
     mean_time_to_first_passing_implementation_ms: mean(passingVerificationTimes),
+    usage_complete: usageComplete,
     usage: {
-      input_tokens: sum(selected.map((record) => record.usage.input_tokens)),
-      output_tokens: sum(selected.map((record) => record.usage.output_tokens)),
-      cost_usd: sum(selected.map((record) => record.usage.cost_usd)),
-      turns: sum(selected.map((record) => record.usage.turns)),
+      input_tokens: usageComplete ? sum(selected.map((record) => record.usage.input_tokens)) : null,
+      output_tokens: usageComplete ? sum(selected.map((record) => record.usage.output_tokens)) : null,
+      cost_usd: usageComplete ? sum(selected.map((record) => record.usage.cost_usd)) : null,
+      turns: usageComplete ? sum(selected.map((record) => record.usage.turns)) : null,
     },
   };
 }
@@ -434,6 +437,7 @@ function observationErrors(observation, task) {
     errors.push("condition result usage is required");
   } else {
     for (const key of ["input_tokens", "output_tokens", "cost_usd", "turns"]) {
+      if (observation.usage_complete === false && observation.usage[key] === null) continue;
       if (!Number.isFinite(observation.usage[key]) || observation.usage[key] < 0) {
         errors.push(`condition result usage.${key} must be a non-negative number`);
       }
@@ -793,7 +797,7 @@ export async function observationFromRun({ projectRoot, task, condition, runResu
         .map((check) => check.id)
     : [];
   const artifactChecksPassed =
-    verification !== null &&
+    verification !== null && verification.evidence_complete !== false &&
     verification.checks.every((check) => !check.required || commandSucceeded(check));
   if (verificationGate !== artifactChecksPassed) {
     throw new Error(
@@ -802,14 +806,13 @@ export async function observationFromRun({ projectRoot, task, condition, runResu
   }
   const changedFiles = receipt.verified_subject?.changed_files ?? verification?.changed_files ?? [];
   const baselineUsage = receipt.usage ?? {};
-  const usageComplete = receipt.usage_complete !== false && receipt.usage != null;
+  const usageComplete = hasCompleteUsage(receipt);
   const usage = {
     input_tokens: baselineUsage.input_tokens ?? baselineUsage.input ?? null,
     output_tokens: baselineUsage.output_tokens ?? baselineUsage.output ?? null,
     cost_usd: baselineUsage.cost_usd ?? null,
     turns: baselineUsage.turns ?? null,
   };
-  if (!usageComplete) throw new Error(`Usage evidence is incomplete for ${task.id}; this run can't be compared. Rerun the failed condition.`);
   let qodoReview = null;
   if (condition === "factory" && receipt.artifact_paths?.review) {
     const review = await readJson(
@@ -842,7 +845,8 @@ export async function observationFromRun({ projectRoot, task, condition, runResu
     time_to_verification_ms: receipt.time_to_verification_ms ?? null,
     verification_commands_duration_ms: receipt.verification_commands_duration_ms ?? null,
     review_time_ms: receipt.review_time_ms ?? null,
-    usage,
+    usage_complete: usageComplete,
+    usage: usageComplete ? usage : { input_tokens: null, output_tokens: null, cost_usd: null, turns: null },
     changed_files: changedFiles,
     unnecessary_files: changedFiles.filter((file) => !task.files_expected.includes(file)),
     receipt_path: path.relative(projectRoot, path.join(artifactsDir, "receipt.json")),
