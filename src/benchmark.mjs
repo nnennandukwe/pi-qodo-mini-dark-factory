@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { commandSucceeded } from "./process.mjs";
 import { validateTask } from "./contracts.mjs";
 
 const SUITE_SCHEMA = "mini-dark-factory-benchmark-suite/v1";
@@ -788,12 +789,12 @@ export async function observationFromRun({ projectRoot, task, condition, runResu
       : receipt.gates?.find((gate) => gate.name === "verification")?.passed === true;
   const failedChecks = verification
     ? verification.checks
-        .filter((check) => check.required && check.exit_code !== 0)
+        .filter((check) => check.required && !commandSucceeded(check))
         .map((check) => check.id)
     : [];
   const artifactChecksPassed =
     verification !== null &&
-    verification.checks.every((check) => !check.required || check.exit_code === 0);
+    verification.checks.every((check) => !check.required || commandSucceeded(check));
   if (verificationGate !== artifactChecksPassed) {
     throw new Error(
       `Verification gate and artifact disagree for ${task.id}: gate=${verificationGate}, artifact=${artifactChecksPassed}`,
@@ -801,12 +802,14 @@ export async function observationFromRun({ projectRoot, task, condition, runResu
   }
   const changedFiles = receipt.verified_subject?.changed_files ?? verification?.changed_files ?? [];
   const baselineUsage = receipt.usage ?? {};
+  const usageComplete = receipt.usage_complete !== false && receipt.usage != null;
   const usage = {
-    input_tokens: baselineUsage.input_tokens ?? baselineUsage.input ?? 0,
-    output_tokens: baselineUsage.output_tokens ?? baselineUsage.output ?? 0,
-    cost_usd: baselineUsage.cost_usd ?? 0,
-    turns: baselineUsage.turns ?? 0,
+    input_tokens: baselineUsage.input_tokens ?? baselineUsage.input ?? null,
+    output_tokens: baselineUsage.output_tokens ?? baselineUsage.output ?? null,
+    cost_usd: baselineUsage.cost_usd ?? null,
+    turns: baselineUsage.turns ?? null,
   };
+  if (!usageComplete) throw new Error(`Usage evidence is incomplete for ${task.id}; this run can't be compared. Rerun the failed condition.`);
   let qodoReview = null;
   if (condition === "factory" && receipt.artifact_paths?.review) {
     const review = await readJson(

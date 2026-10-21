@@ -4,13 +4,13 @@ import path from "node:path";
 
 import { validateImplementationReport, validateTask } from "./contracts.mjs";
 import { changedFiles, patchEvidence, prepareTaskRepository } from "./git.mjs";
-import { runCommand } from "./process.mjs";
+import { commandSucceeded, runCommand } from "./process.mjs";
 
 async function writeJson(file, value) {
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-export async function runBaseline({ projectRoot, taskPath, runner }) {
+export async function runBaseline({ projectRoot, taskPath, runner, verificationTimeoutMs = 180_000 }) {
   const startedAt = new Date().toISOString();
   const started = performance.now();
   const task = JSON.parse(await readFile(taskPath, "utf8"));
@@ -42,6 +42,8 @@ export async function runBaseline({ projectRoot, taskPath, runner }) {
       wall_time_ms: Math.round(performance.now() - started),
       base_sha: baseSha,
       reason,
+      usage: null,
+      usage_complete: false,
     };
     await writeJson(path.join(artifactsDir, "receipt.json"), receipt);
     return { receipt, runDir, artifactsDir };
@@ -61,7 +63,7 @@ export async function runBaseline({ projectRoot, taskPath, runner }) {
     checks.push({
       id: check.id,
       required: check.required,
-      ...(await runCommand(argv, { cwd: repoDir, env: verificationEnv, timeoutMs: 180_000 })),
+      ...(await runCommand(argv, { cwd: repoDir, env: verificationEnv, timeoutMs: verificationTimeoutMs })),
     });
   }
   const verificationCommandsDurationMs = Math.round(performance.now() - verificationStarted);
@@ -77,7 +79,7 @@ export async function runBaseline({ projectRoot, taskPath, runner }) {
   };
   await writeJson(path.join(artifactsDir, "verification.json"), verification);
 
-  const failedChecks = checks.filter((check) => check.required && check.exit_code !== 0);
+  const failedChecks = checks.filter((check) => check.required && !commandSucceeded(check));
   const success = implementationGate.ok && failedChecks.length === 0;
   const receipt = {
     schema_version: "mini-dark-factory-baseline-receipt/v1",
@@ -105,6 +107,7 @@ export async function runBaseline({ projectRoot, taskPath, runner }) {
       },
     },
     usage: agentResult.evidence.usage,
+    usage_complete: true,
     artifact_paths: {
       task: "artifacts/task.json",
       implementation: "artifacts/implementation.json",

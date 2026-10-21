@@ -784,3 +784,30 @@ test("run observation rejects disagreement between the verification gate and art
     /Verification gate and artifact disagree/,
   );
 });
+
+test("run observation rejects a saved timeout that contradicts a passing gate", async (t) => {
+  const projectRoot = await mkdtemp(path.join(os.tmpdir(), "pi-qodo-timeout-observation-"));
+  t.after(() => rm(projectRoot, { recursive: true, force: true }));
+  const runDir = path.join(projectRoot, "run");
+  const artifactsDir = path.join(runDir, "artifacts");
+  await mkdir(artifactsDir, { recursive: true });
+  const receipt = {
+    success: true, terminal_status: "COMPLETE", usage_complete: true,
+    usage: { input: 10, output: 20, cost_usd: 0.01, turns: 1 },
+    gates: { implementation: { ok: true }, verification: { passed: true } },
+    artifact_paths: { verification: "artifacts/verification.json" },
+  };
+  for (const timedOut of [false, true]) {
+    await writeFile(path.join(artifactsDir, "verification.json"), JSON.stringify({
+      changed_files: task.files_expected,
+      checks: [{ id: "held-out-oracle", required: true, exit_code: 0, timed_out: timedOut }],
+    }));
+    const observation = observationFromRun({ projectRoot, task, condition: "baseline", runResult: { runDir, artifactsDir, receipt } });
+    if (timedOut) await assert.rejects(observation, /Verification gate and artifact disagree/);
+    else assert.equal((await observation).required_checks_passed, true);
+  }
+  receipt.usage_complete = false;
+  receipt.usage = null;
+  receipt.gates.verification.passed = false;
+  await assert.rejects(observationFromRun({ projectRoot, task, condition: "baseline", runResult: { runDir, artifactsDir, receipt } }), /Usage evidence is incomplete/);
+});

@@ -1,7 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { runCommand } from "./process.mjs";
+import { assertCompleteOutput, commandSucceeded, runCommand } from "./process.mjs";
 
 const ACTION_SEVERITIES = new Map([
   ["action_required", "high"],
@@ -86,7 +86,7 @@ function relayProgressLine(line) {
 
 function contextFor(input) {
   const passedChecks = input.verification.checks
-    .filter((check) => check.required && check.exit_code === 0)
+    .filter((check) => check.required && commandSucceeded(check))
     .map((check) => check.id);
   return {
     summary: `${input.task.title}. ${input.implementation.summary}`,
@@ -99,10 +99,11 @@ function contextFor(input) {
 }
 
 export class QodoReviewer {
-  constructor({ qodoBin = "qodo", depth = "fast" } = {}) {
+  constructor({ qodoBin = "qodo", depth = "fast", timeoutMs = 10 * 60_000 } = {}) {
     if (!["fast", "deep"].includes(depth)) throw new Error("Qodo depth must be fast or deep");
     this.qodoBin = qodoBin;
     this.depth = depth;
+    this.timeoutMs = timeoutMs;
     this.readyRepository = null;
     this.cliVersion = null;
   }
@@ -110,6 +111,7 @@ export class QodoReviewer {
   async preflight({ cwd, repository }) {
     if (!repository) throw new Error("Qodo review requires task.repository metadata");
     const version = await runCommand([this.qodoBin, "--version"], { cwd });
+    assertCompleteOutput(version, "Qodo version");
     if (version.exit_code !== 0) throw new Error(`Qodo is unavailable: ${version.stderr}`);
     const auth = await runCommand(
       [
@@ -126,6 +128,7 @@ export class QodoReviewer {
       ],
       { cwd },
     );
+    assertCompleteOutput(auth, "Qodo authentication");
     if (auth.exit_code !== 0) {
       throw new Error("Qodo authentication failed. Run `qodo login`, then retry the workflow.");
     }
@@ -142,6 +145,7 @@ export class QodoReviewer {
       ],
       { cwd, timeoutMs: 60_000 },
     );
+    assertCompleteOutput(inventory, "Qodo repository inventory");
     const inventoryResult = parseJson(inventory.stdout, "Qodo repository inventory");
     if (inventory.exit_code !== 0 || inventoryResult.error) {
       throw new Error(
@@ -190,7 +194,7 @@ export class QodoReviewer {
       ],
       {
         cwd,
-        timeoutMs: 10 * 60_000,
+        timeoutMs: this.timeoutMs,
         onStderr(chunk) {
           pending += chunk;
           const lines = pending.split("\n");
@@ -203,6 +207,7 @@ export class QodoReviewer {
     await writeFile(resultPath, command.stdout);
     await writeFile(progressPath, command.stderr);
 
+    assertCompleteOutput(command, "Qodo review");
     const rawResult = parseJson(command.stdout, "Qodo review");
     if (rawResult.error) {
       const code = rawResult.error.code ? `${rawResult.error.code}: ` : "";

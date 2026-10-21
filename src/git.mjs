@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import { cp, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { runCommand } from "./process.mjs";
+import { assertCompleteOutput, runCommand } from "./process.mjs";
 
 async function git(cwd, args) {
   const result = await runCommand(["git", ...args], { cwd });
+  assertCompleteOutput(result, `git ${args[0]}`);
   if (result.exit_code !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
   }
@@ -40,6 +41,7 @@ export async function prepareTaskRepository({ projectRoot, task, destination }) 
     ],
     { timeoutMs: 180_000 },
   );
+  assertCompleteOutput(clone, "git clone");
   if (clone.exit_code !== 0) {
     throw new Error(`git clone failed: ${clone.stderr || clone.stdout}`);
   }

@@ -10,6 +10,7 @@ import {
   validateTask,
 } from "./contracts.mjs";
 import { changedFiles, patchEvidence } from "./git.mjs";
+import { commandSucceeded } from "./process.mjs";
 import { transition } from "./state-machine.mjs";
 
 function safeTimestamp() {
@@ -179,7 +180,7 @@ export async function retryReview({
     .filter((expected) => expected.required)
     .filter((expected) => {
       const recorded = verification.checks?.find((check) => check.id === expected.id);
-      return !recorded || recorded.required !== true || recorded.exit_code !== 0;
+      return !recorded || recorded.required !== true || !commandSucceeded(recorded);
     });
   if (requiredFailures.length > 0) {
     throw new Error(

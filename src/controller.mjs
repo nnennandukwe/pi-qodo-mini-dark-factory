@@ -10,7 +10,7 @@ import {
   validateTask,
 } from "./contracts.mjs";
 import { changedFiles, patchEvidence, prepareTaskRepository } from "./git.mjs";
-import { runCommand } from "./process.mjs";
+import { commandSucceeded, runCommand } from "./process.mjs";
 import { createRunState, transition } from "./state-machine.mjs";
 
 function safeTimestamp() {
@@ -78,6 +78,7 @@ export async function runPilot({
   reviewer = null,
   reviewerName = null,
   scenario = null,
+  verificationTimeoutMs = 180_000,
 }) {
   const startedAt = new Date().toISOString();
   const started = performance.now();
@@ -119,6 +120,7 @@ export async function runPilot({
   };
   const finish = async () => {
     const finishedAt = new Date().toISOString();
+    const usageComplete = !gates.some((decision) => decision.name.endsWith("_runtime") && !decision.passed);
     const receipt = {
       schema_version: "mini-dark-factory-receipt/v2",
       run_id: runId,
@@ -138,7 +140,8 @@ export async function runPilot({
       verified_subject: verifiedSubject,
       state_history: state.history,
       gates,
-      usage: sumUsage(agentEvidence),
+      usage: usageComplete ? sumUsage(agentEvidence) : null,
+      usage_complete: usageComplete,
       artifact_paths: await existingArtifacts(runDir),
     };
     await writeJson(path.join(artifactsDir, "receipt.json"), receipt);
@@ -213,7 +216,7 @@ export async function runPilot({
     const command = await runCommand(argv, {
       cwd: repoDir,
       env: verificationEnv,
-      timeoutMs: 180_000,
+      timeoutMs: verificationTimeoutMs,
     });
     checks.push({ id: check.id, required: check.required, ...command });
   }
@@ -229,7 +232,7 @@ export async function runPilot({
     checks,
   };
   await writeJson(path.join(artifactsDir, "verification.json"), verification);
-  const failedRequired = checks.filter((check) => check.required && check.exit_code !== 0);
+  const failedRequired = checks.filter((check) => check.required && !commandSucceeded(check));
   gate(
     "verification",
     failedRequired.length === 0,
