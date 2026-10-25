@@ -12,6 +12,8 @@ Scripted acceptance runs without Pi or Qodo installed and records `pi_version: n
 
 Use `--help` on each command for usage. `run --quiet` suppresses the stdout receipt summary while preserving diagnostics and the receipt's failure exit code. `run` and `baseline` exit nonzero when their receipt reports failure; acceptance succeeds when all seven scenarios reach their expected outcomes.
 
+`run` defaults to the scripted runner. Live options require `--runner pi`; `--qodo-bin` and `--qodo-depth` also require `--reviewer qodo`. `--scenario` selects one of the seven names listed by `run --help` and only applies to scripted runs. Unknown scenarios and options that the selected runner wouldn't use fail before any run artifacts are created.
+
 A command that exceeds its deadline produces failed or incomplete evidence even when its cleanup exits zero. Verification, review retry, comparison, and benchmark observations reject that evidence. Captures retain at most 262144 characters per stream and mark truncation; Git, Pi, and Qodo adapters reject truncated evidence before interpreting it. Failed agent stages record `usage_complete: false` and unknown usage. Comparisons suppress unknown usage and percentage changes; benchmarks retain functional results with unknown usage and suppress incomplete usage totals and comparisons. Each live receipt records the Pi version used by that run. Comparisons read runtime versions from those receipts. Older receipts and benchmark records without a completeness marker retain unknown usage. Existing saved evidence files stay intact.
 
 ## Architecture
@@ -67,7 +69,7 @@ npm run pilot:pi-qodo -- \
   --qodo-depth fast
 ```
 
-The Qodo gate is complete only when Qodo returns structured findings, the controller records them, no high-severity finding remains, and the reviewed patch digest still matches the verified subject. A missing, failed, or unavailable Qodo result leaves the run in `REVIEWER_FAILED`; it never becomes an implicit approval.
+The Qodo gate is complete only when Qodo returns structured findings, the controller records them, no high-severity finding remains, and the reviewed patch digest still matches the verified subject. Incremental and reused results include introduced and still-open findings, deduplicated by ID. An explicit incomplete coverage or finding-state marker leaves the run in `REVIEWER_FAILED`, with the raw result saved for diagnosis and the verified patch available for review retry.
 
 If Pi and deterministic verification already passed, retry only the external review:
 

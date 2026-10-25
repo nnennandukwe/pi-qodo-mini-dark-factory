@@ -11,7 +11,7 @@ import { assertPiAvailable, PiRunner } from "./pi-runner.mjs";
 import { assertCompleteOutput, runCommand } from "./process.mjs";
 import { QodoReviewer } from "./qodo-runner.mjs";
 import { retryReview } from "./review-retry.mjs";
-import { ScriptedRunner } from "./scripted-runner.mjs";
+import { SCRIPTED_SCENARIOS, ScriptedRunner } from "./scripted-runner.mjs";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const defaultTask = path.join(projectRoot, "tasks", "reject-expired-session-token.json");
@@ -45,7 +45,14 @@ Qodo options:
   --qodo-bin <path>     Override the Qodo executable.
 
 Run options:
+  --runner <name>      scripted (default) or pi; live options require pi.
+  --reviewer <name>    pi (default for live runs) or qodo; requires --runner pi.
+  --scenario <name>    Scripted runs only: ${SCRIPTED_SCENARIOS.join(", ")}.
+  --task <path>        Task manifest; defaults to the embedded session-token task.
   --quiet              Suppress the stdout receipt summary; errors and exit codes remain available.
+
+  --provider, --model, --thinking, and --pi-bin require --runner pi.
+  --qodo-bin and --qodo-depth require --runner pi --reviewer qodo.
 
 Retry options:
   --run-dir <path>      REVIEWER_FAILED run whose verified patch should be reviewed.
@@ -105,6 +112,29 @@ function parseFlags(tokens, command) {
   return flags;
 }
 
+function validateRunFlags(flags) {
+  const runner = flags.runner ?? "scripted";
+  if (!["scripted", "pi"].includes(runner)) throw new Error(`Unknown runner: ${runner}`);
+  if (runner === "scripted") {
+    for (const name of ["reviewer", "provider", "model", "thinking", "pi-bin", "qodo-bin", "qodo-depth"]) {
+      if (Object.hasOwn(flags, name)) {
+        throw new Error(`--${name} requires --runner pi. Select --runner pi or remove --${name}.`);
+      }
+    }
+    return;
+  }
+  if (Object.hasOwn(flags, "scenario")) {
+    throw new Error("--scenario only works with --runner scripted. Remove --scenario for a live Pi run.");
+  }
+  if ((flags.reviewer ?? "pi") !== "qodo") {
+    for (const name of ["qodo-bin", "qodo-depth"]) {
+      if (Object.hasOwn(flags, name)) {
+        throw new Error(`--${name} requires --reviewer qodo. Select --reviewer qodo or remove --${name}.`);
+      }
+    }
+  }
+}
+
 async function makeRunner(flags, task) {
   const runnerName = flags.runner ?? "scripted";
   if (runnerName === "scripted") {
@@ -155,6 +185,7 @@ async function makeRunner(flags, task) {
 }
 
 async function runOnce(flags) {
+  validateRunFlags(flags);
   const taskPath = path.resolve(flags.task ?? defaultTask);
   const task = JSON.parse(await readFile(taskPath, "utf8"));
   const taskContract = validateTask(task);

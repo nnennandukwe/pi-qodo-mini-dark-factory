@@ -36,7 +36,23 @@ export function normalizeQodoReview(result, task) {
   if (!result || !Array.isArray(result.findings)) {
     throw new Error("Qodo result did not contain a findings array");
   }
-  const findings = result.findings.map((finding) => ({
+  if (result.meta?.coverage?.complete === false || result.finding_state?.complete === false) {
+    throw new Error("Qodo review evidence is incomplete. Retry review after complete coverage is available.");
+  }
+  const currentFindings = [...result.findings];
+  for (const name of ["introduced", "still_open"]) {
+    const entries = result.finding_state?.[name];
+    if (entries === undefined) continue;
+    if (!Array.isArray(entries)) throw new Error(`Qodo finding_state.${name} must be an array. Retry review with a valid result.`);
+    currentFindings.push(...entries);
+  }
+  const seenIds = new Set();
+  const findings = currentFindings.filter((finding) => {
+    if (finding.id === undefined || finding.id === null) return true;
+    if (seenIds.has(finding.id)) return false;
+    seenIds.add(finding.id);
+    return true;
+  }).map((finding) => ({
     severity: severityFor(finding),
     summary: finding.title ?? finding.finding_title ?? finding.description ?? "Untitled Qodo finding",
     file: fileFor(finding),
