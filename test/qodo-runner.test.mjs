@@ -95,6 +95,18 @@ test("duplicate finding IDs preserve the strongest severity in either order", ()
   }
 });
 
+test("findings without usable IDs remain separate evidence", () => {
+  for (const id of [undefined, null, "", "   "]) {
+    const review = normalizeQodoReview({
+      findings: [{ id, title: "First recommendation", action_level: "remediation_recommended" }],
+      finding_state: { complete: true, still_open: [
+        { id, title: "Second recommendation", action_level: "remediation_recommended" },
+      ] },
+    }, task);
+    assert.deepEqual(review.findings.map((finding) => finding.summary), ["First recommendation", "Second recommendation"]);
+  }
+});
+
 test("Qodo rejects malformed finding state instead of dropping evidence", () => {
   for (const name of ["introduced", "still_open"]) {
     assert.throws(() => normalizeQodoReview({

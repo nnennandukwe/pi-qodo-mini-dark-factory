@@ -64,7 +64,7 @@ export function normalizeQodoReview(result, task) {
       category: finding.category ?? null,
       action_level: finding.action_level ?? finding.severity_level ?? finding.severity ?? null,
     };
-    const key = finding.id ?? finding;
+    const key = typeof finding.id === "string" && finding.id.trim() ? finding.id : finding;
     const previous = findingsById.get(key);
     if (!previous || SEVERITIES.indexOf(normalized.severity) > SEVERITIES.indexOf(previous.severity)) {
       findingsById.set(key, normalized);
