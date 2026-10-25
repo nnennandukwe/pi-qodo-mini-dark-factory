@@ -25,6 +25,38 @@ test("CLI help documents review retry and recovery input", async () => {
   assert.match(result.stdout, /--attempt-id/);
 });
 
+test("run rejects unused options before launching tools or writing artifacts", async (t) => {
+  const workspace = await cliWorkspace(t);
+  const cases = [
+    ["--reviewer", "qodo", "--qodo-bin", "/missing/qodo"],
+    ["--runner", "scripted", "--reviewer", "pi"],
+    ...["provider", "model", "thinking", "pi-bin", "qodo-bin", "qodo-depth"].map((name) => [`--${name}`, "unused"]),
+    ["--runner", "pi", "--scenario", "happy"],
+    ["--runner", "pi", "--qodo-depth", "deep"],
+    ["--runner", "pi", "--reviewer", "pi", "--qodo-bin", "/missing/qodo"],
+  ];
+  for (const flags of cases) {
+    const result = await runCommand([process.execPath, "src/cli.mjs", "run", ...flags], workspace);
+    assert.equal(result.exit_code, 1, flags.join(" "));
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /requires --runner pi|requires --reviewer qodo|only works with --runner scripted/);
+    assert.doesNotMatch(result.stderr, /Pi runtime:|Qodo runtime:|\n\s+at /);
+  }
+  await assert.rejects(access(path.join(workspace.cwd, ".factory-runs")), { code: "ENOENT" });
+});
+
+test("unknown scenarios fail before artifacts and a corrected retry succeeds", async (t) => {
+  const workspace = await cliWorkspace(t);
+  const rejected = await runCommand([process.execPath, "src/cli.mjs", "run", "--scenario", "review-change"], workspace);
+  assert.equal(rejected.exit_code, 1);
+  assert.equal(rejected.stdout, "");
+  assert.match(rejected.stderr, /Unknown scripted scenario.*review-change.*review-changes/s);
+  await assert.rejects(access(path.join(workspace.cwd, ".factory-runs")), { code: "ENOENT" });
+  const corrected = await runCommand([process.execPath, "src/cli.mjs", "run", "--scenario", "review-changes"], workspace);
+  assert.equal(corrected.exit_code, 1);
+  assert.equal(JSON.parse(corrected.stdout).terminal_status, "CHANGES_REQUESTED");
+});
+
 test("every command accepts help before required options without creating runs", async (t) => {
   const workspace = await cliWorkspace(t);
   for (const command of ["acceptance", "baseline", "benchmark", "run", "retry-review"]) {

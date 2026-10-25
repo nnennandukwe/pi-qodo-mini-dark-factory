@@ -31,7 +31,8 @@ import path from "node:path";
 if (process.argv.includes("--version")) {
   console.log("fixture-pi");
 } else if (process.env.FACTORY_TEST_PI_SCENARIO) {
-  const runner = new ScriptedRunner({ scenario: process.env.FACTORY_TEST_PI_SCENARIO });
+  const scenario = process.env.FACTORY_TEST_PI_SCENARIO;
+  const runner = new ScriptedRunner({ scenario: scenario === "oversized-review" ? "happy" : scenario });
   const promptIndex = process.argv.indexOf("--append-system-prompt") + 1;
   const role = path.basename(process.argv[promptIndex], ".md");
   const { output } = await runner.run(role === "baseline" ? "implementer" : role, { cwd: process.cwd() });

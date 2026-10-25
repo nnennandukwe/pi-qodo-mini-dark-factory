@@ -1,6 +1,16 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+export const SCRIPTED_SCENARIOS = Object.freeze([
+  "happy",
+  "plan-missing-non-goals",
+  "out-of-scope",
+  "verification-fail",
+  "post-verification-mutation",
+  "review-time-mutation",
+  "review-changes",
+]);
+
 const VALID_PLAN = Object.freeze({
   task_id: "reject-expired-session-token",
   summary: "Add an explicit expiration check and cover both expired and valid renewal behavior.",
@@ -58,6 +68,9 @@ function implementationReport(changedFiles) {
 
 export class ScriptedRunner {
   constructor({ scenario = "happy" } = {}) {
+    if (!SCRIPTED_SCENARIOS.includes(scenario)) {
+      throw new Error(`Unknown scripted scenario: ${scenario}. Choose one of: ${SCRIPTED_SCENARIOS.join(", ")}`);
+    }
     this.scenario = scenario;
   }
 
