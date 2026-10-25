@@ -78,15 +78,39 @@ test("Qodo incomplete coverage and finding state require another review", () => 
   }
 });
 
+test("duplicate finding IDs preserve the strongest severity in either order", () => {
+  const lower = { id: "same", title: "Lower severity", action_level: "informational" };
+  for (const higher of [
+    { id: "same", title: "Blocking severity", action_level: "action_required" },
+    { id: "same", title: "Blocking severity", severity: "critical" },
+  ]) {
+    for (const [current, retained] of [[lower, higher], [higher, lower]]) {
+      const review = normalizeQodoReview({
+        findings: [current], finding_state: { complete: true, still_open: [retained] },
+      }, task);
+      assert.equal(review.decision, "request_changes");
+      assert.equal(review.findings.length, 1);
+      assert.equal(review.findings[0].summary, "Blocking severity");
+    }
+  }
+});
+
 test("Qodo rejects malformed finding state instead of dropping evidence", () => {
   for (const name of ["introduced", "still_open"]) {
     assert.throws(() => normalizeQodoReview({
       findings: [], finding_state: { complete: true, [name]: {} },
     }, task), /finding_state.*array/i);
   }
+  for (const entry of ["blocker", 1, false, null, [], {}]) {
+    for (const name of ["introduced", "still_open"]) {
+      assert.throws(() => normalizeQodoReview({
+        findings: [], finding_state: { complete: true, [name]: [entry] },
+      }, task), /finding.*invalid.*retry/i);
+    }
+  }
 });
 
-test("incomplete Qodo results preserve failure evidence and recover through review retry", async (t) => {
+test("incomplete and malformed Qodo results preserve evidence and recover through review retry", async (t) => {
   const workspace = await cliWorkspace(t);
   const resultPath = path.join(workspace.cwd, "review-result.json");
   const binary = await executable(workspace.cwd, "qodo-fixture", `
@@ -105,6 +129,7 @@ process.stdout.write(await readFile(${JSON.stringify(resultPath)}, "utf8"));
   for (const incomplete of [
     { findings: [], meta: { coverage: { complete: false }, reviewers: { ran: ["issue"] } } },
     { findings: [], finding_state: { complete: false } },
+    { findings: [], finding_state: { complete: true, still_open: ["invalid finding"] } },
   ]) {
     const raw = `${JSON.stringify(incomplete)}\n`;
     await writeFile(resultPath, raw);
@@ -115,7 +140,7 @@ process.stdout.write(await readFile(${JSON.stringify(resultPath)}, "utf8"));
     });
     assert.equal(run.receipt.terminal_status, "REVIEWER_FAILED");
     assert.equal(run.receipt.success, false);
-    assert.match(run.receipt.gates.find((gate) => gate.name === "reviewer_runtime").reasons.join(" "), /incomplete.*retry/i);
+    assert.match(run.receipt.gates.find((gate) => gate.name === "reviewer_runtime").reasons.join(" "), /(?:incomplete|invalid).*retry/i);
     assert.ok(run.receipt.verified_subject.patch_digest);
     assert.equal(await readFile(path.join(run.artifactsDir, "agents/qodo-review-result.json"), "utf8"), raw);
     await assert.rejects(access(path.join(run.artifactsDir, "review.json")), { code: "ENOENT" });
@@ -127,7 +152,7 @@ process.stdout.write(await readFile(${JSON.stringify(resultPath)}, "utf8"));
     assert.match(repeated.receipt.recovery, /retry/i);
 
     await writeFile(resultPath, JSON.stringify({
-      findings: [],
+      findings: [{ id: "open", title: "Lower severity", action_level: "informational" }],
       finding_state: { complete: true, introduced: [], still_open: [
         { id: "open", title: "Retained blocker", action_level: "action_required" },
       ] },

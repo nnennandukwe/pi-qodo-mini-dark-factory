@@ -8,6 +8,7 @@ const ACTION_SEVERITIES = new Map([
   ["remediation_recommended", "medium"],
   ["informational", "low"],
 ]);
+const SEVERITIES = Object.freeze(["low", "medium", "high", "critical"]);
 
 function parseJson(text, label) {
   try {
@@ -19,7 +20,7 @@ function parseJson(text, label) {
 
 function severityFor(finding) {
   const direct = finding.severity;
-  if (["low", "medium", "high", "critical"].includes(direct)) return direct;
+  if (SEVERITIES.includes(direct)) return direct;
   return ACTION_SEVERITIES.get(finding.action_level ?? finding.severity_level) ?? "medium";
 }
 
@@ -46,19 +47,30 @@ export function normalizeQodoReview(result, task) {
     if (!Array.isArray(entries)) throw new Error(`Qodo finding_state.${name} must be an array. Retry review with a valid result.`);
     currentFindings.push(...entries);
   }
-  const seenIds = new Set();
-  const findings = currentFindings.filter((finding) => {
-    if (finding.id === undefined || finding.id === null) return true;
-    if (seenIds.has(finding.id)) return false;
-    seenIds.add(finding.id);
-    return true;
-  }).map((finding) => ({
-    severity: severityFor(finding),
-    summary: finding.title ?? finding.finding_title ?? finding.description ?? "Untitled Qodo finding",
-    file: fileFor(finding),
-    category: finding.category ?? null,
-    action_level: finding.action_level ?? finding.severity_level ?? finding.severity ?? null,
-  }));
+  const findingsById = new Map();
+  for (const finding of currentFindings) {
+    if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
+      throw new Error("Qodo finding is invalid; expected an object. Retry review with a valid result.");
+    }
+    const summary = finding.title ?? finding.finding_title ?? finding.description;
+    if (typeof summary !== "string" || !summary.trim() ||
+        (!SEVERITIES.includes(finding.severity) && !ACTION_SEVERITIES.has(finding.action_level ?? finding.severity_level))) {
+      throw new Error("Qodo finding is invalid; expected a summary and recognized severity. Retry review with a valid result.");
+    }
+    const normalized = {
+      severity: severityFor(finding),
+      summary,
+      file: fileFor(finding),
+      category: finding.category ?? null,
+      action_level: finding.action_level ?? finding.severity_level ?? finding.severity ?? null,
+    };
+    const key = finding.id ?? finding;
+    const previous = findingsById.get(key);
+    if (!previous || SEVERITIES.indexOf(normalized.severity) > SEVERITIES.indexOf(previous.severity)) {
+      findingsById.set(key, normalized);
+    }
+  }
+  const findings = [...findingsById.values()];
   const ran = result.meta?.reviewers?.ran;
   const evidenceSufficient = !Array.isArray(ran) || ran.length > 0;
   const hasBlockingFinding = findings.some((finding) =>
