@@ -2,13 +2,25 @@
 import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+const HELP = `Usage: node src/capture-v1.mjs --multi <receipt> --baseline <receipt> --output <directory>
+
+Export saved v1 workflow and baseline artifacts with agent summaries.
+Raw agent event streams are omitted from the summaries.
+`;
+
 function parseFlags(tokens) {
   const flags = {};
+  const allowed = new Set(["multi", "baseline", "output"]);
   for (let index = 0; index < tokens.length; index += 2) {
-    const name = tokens[index];
+    const token = tokens[index];
+    const name = token?.slice(2);
+    if (!token?.startsWith("--") || !allowed.has(name)) {
+      throw new Error(`Unknown option: ${token}. Use --help for export usage.`);
+    }
     const value = tokens[index + 1];
-    if (!name?.startsWith("--") || !value) throw new Error("Expected paired command flags");
-    flags[name.slice(2)] = value;
+    if (!value || value.startsWith("--")) throw new Error(`Missing value for ${token}. Use --help for export usage.`);
+    if (Object.hasOwn(flags, name)) throw new Error(`Repeated option: ${token}. Supply each path once.`);
+    flags[name] = value;
   }
   return flags;
 }
@@ -48,14 +60,25 @@ async function captureRun(receiptPath, destination, { multi }) {
   }
 }
 
-const flags = parseFlags(process.argv.slice(2));
-if (!flags.multi || !flags.baseline || !flags.output) {
-  throw new Error(
-    "Usage: node src/capture-v1.mjs --multi <receipt> --baseline <receipt> --output <directory>",
-  );
+async function main(tokens) {
+  if (tokens.includes("--help") || tokens.includes("-h")) {
+    process.stdout.write(HELP);
+    return;
+  }
+  const flags = parseFlags(tokens);
+  if (!flags.multi || !flags.baseline || !flags.output) {
+    throw new Error("Supply --multi <receipt>, --baseline <receipt>, and --output <directory>.");
+  }
+
+  const output = path.resolve(flags.output);
+  await captureRun(path.resolve(flags.multi), path.join(output, "multi-agent"), { multi: true });
+  await captureRun(path.resolve(flags.baseline), path.join(output, "one-agent"), { multi: false });
+  process.stdout.write(`${JSON.stringify({ output })}\n`);
 }
 
-const output = path.resolve(flags.output);
-await captureRun(path.resolve(flags.multi), path.join(output, "multi-agent"), { multi: true });
-await captureRun(path.resolve(flags.baseline), path.join(output, "one-agent"), { multi: false });
-process.stdout.write(`${JSON.stringify({ output })}\n`);
+try {
+  await main(process.argv.slice(2));
+} catch (error) {
+  process.stderr.write(`Error: ${error instanceof Error ? error.message : String(error)}\nRun with --help for usage.\n`);
+  process.exitCode = 1;
+}
