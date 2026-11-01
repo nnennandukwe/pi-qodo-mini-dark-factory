@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -50,6 +50,16 @@ test("capture reports unreadable receipts and a corrected retry exports summarie
       await writeFile(path.join(artifacts, name), JSON.stringify({ usage: { input: 12 }, raw_event_stream: "private events" }));
     }
   }
+  for (const input of [multi, baseline, ...["planner", "implementer", "reviewer"].map((role) => path.join(path.dirname(multi), "agents", `${role}.json`)), path.join(path.dirname(baseline), "agent.json")]) {
+    const original = await readFile(input, "utf8");
+    await writeFile(input, "{invalid");
+    const rejected = await runCommand(argv, { cwd: directory });
+    assert.equal(rejected.exit_code, 1);
+    assert.equal(rejected.stdout, "");
+    assert.ok(rejected.stderr.includes(input), rejected.stderr);
+    assert.doesNotMatch(rejected.stderr, /\n\s+at /);
+    await writeFile(input, original);
+  }
   const malformed = "{invalid";
   await writeFile(multi, malformed);
   const invalid = await runCommand(argv, { cwd: directory });
@@ -57,7 +67,6 @@ test("capture reports unreadable receipts and a corrected retry exports summarie
   assert.equal(invalid.stdout, "");
   assert.match(invalid.stderr, /Run with --help for usage/);
   assert.doesNotMatch(invalid.stderr, /\n\s+at /);
-  await assert.rejects(access(output), { code: "ENOENT" });
   await writeFile(multi, JSON.stringify({ artifact_paths: { verification: "artifacts/verification.json" } }));
   const result = await runCommand(argv, { cwd: directory });
   assert.equal(result.exit_code, 0, result.stderr);
@@ -71,4 +80,12 @@ test("capture reports unreadable receipts and a corrected retry exports summarie
   assert.equal(roles.planner.raw_event_stream, undefined);
   const agent = JSON.parse(await readFile(path.join(output, "one-agent/agent-summary.json"), "utf8"));
   assert.deepEqual(agent, { usage: { input: 12 } });
+  const receiptDirectory = path.dirname(multi);
+  const receiptBytes = await readFile(multi);
+  for (const name of ["--receipt.json", "--help", "-h"]) {
+    await writeFile(path.join(receiptDirectory, name), receiptBytes);
+    const dashPath = await runCommand([process.execPath, capture, "--multi", name, "--baseline", baseline, "--output", `--export-${name}`], { cwd: receiptDirectory });
+    assert.equal(dashPath.exit_code, 0, dashPath.stderr);
+    assert.deepEqual(JSON.parse(dashPath.stdout), { output: path.join(await realpath(receiptDirectory), `--export-${name}`) });
+  }
 });

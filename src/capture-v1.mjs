@@ -13,12 +13,13 @@ function parseFlags(tokens) {
   const allowed = new Set(["multi", "baseline", "output"]);
   for (let index = 0; index < tokens.length; index += 2) {
     const token = tokens[index];
+    if (["--help", "-h"].includes(token)) return { help: true };
     const name = token?.slice(2);
     if (!token?.startsWith("--") || !allowed.has(name)) {
       throw new Error(`Unknown option: ${token}. Use --help for export usage.`);
     }
     const value = tokens[index + 1];
-    if (!value || value.startsWith("--")) throw new Error(`Missing value for ${token}. Use --help for export usage.`);
+    if (!value || (value.startsWith("--") && allowed.has(value.slice(2)))) throw new Error(`Missing value for ${token}. Use --help for export usage.`);
     if (Object.hasOwn(flags, name)) throw new Error(`Repeated option: ${token}. Supply each path once.`);
     flags[name] = value;
   }
@@ -26,7 +27,12 @@ function parseFlags(tokens) {
 }
 
 async function readJson(file) {
-  return JSON.parse(await readFile(file, "utf8"));
+  const contents = await readFile(file, "utf8");
+  try {
+    return JSON.parse(contents);
+  } catch (error) {
+    throw new Error(`Invalid JSON in ${file}: ${error.message}. Repair this file and retry the export.`, { cause: error });
+  }
 }
 
 async function writeJson(file, value) {
@@ -61,11 +67,11 @@ async function captureRun(receiptPath, destination, { multi }) {
 }
 
 async function main(tokens) {
-  if (tokens.includes("--help") || tokens.includes("-h")) {
+  const flags = parseFlags(tokens);
+  if (flags.help) {
     process.stdout.write(HELP);
     return;
   }
-  const flags = parseFlags(tokens);
   if (!flags.multi || !flags.baseline || !flags.output) {
     throw new Error("Supply --multi <receipt>, --baseline <receipt>, and --output <directory>.");
   }
