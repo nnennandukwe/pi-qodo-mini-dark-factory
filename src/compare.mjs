@@ -49,8 +49,8 @@ async function savedEvidence(receipt, receiptPath) {
     : null;
   const [task, verification] = await Promise.all([readArtifact("task"), readArtifact("verification")]);
   const subject = receipt.verified_subject;
-  const matchesSubject = typeof receipt.base_sha === "string" && receipt.base_sha.length > 0 &&
-    typeof subject?.patch_digest === "string" && subject.patch_digest.length > 0 &&
+  const matchesSubject = typeof receipt.base_sha === "string" && /^[0-9a-f]{40}$/.test(receipt.base_sha) &&
+    typeof subject?.patch_digest === "string" && /^[0-9a-f]{64}$/.test(subject.patch_digest) &&
     subject.base_sha === receipt.base_sha && verification?.base_sha === receipt.base_sha &&
     verification?.task_id === receipt.task_id && verification?.patch_digest === subject.patch_digest &&
     Array.isArray(subject.changed_files) && Array.isArray(verification?.changed_files) &&

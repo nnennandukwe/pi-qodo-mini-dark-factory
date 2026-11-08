@@ -252,3 +252,30 @@ test("both runners reject duplicate verification IDs before writing runs", async
     });
   }
 });
+
+test("comparison never interprets a saved base as a Git option", async (t) => {
+  const workspace = await comparisonWorkspace(t);
+  const verificationPath = path.join(path.dirname(workspace.multi), "verification.json");
+  const receiptBytes = await readFile(workspace.multi);
+  const verificationBytes = await readFile(verificationPath);
+  const receipt = JSON.parse(receiptBytes);
+  const verification = JSON.parse(verificationBytes);
+  const forbiddenOutput = path.join(workspace.cwd, "unexpected-git-output.patch");
+  const base = `--output=${forbiddenOutput}`;
+  receipt.base_sha = base;
+  receipt.verified_subject.base_sha = base;
+  receipt.verified_subject.patch_digest = "a".repeat(64);
+  verification.base_sha = base;
+  verification.patch_digest = "a".repeat(64);
+  await writeFile(workspace.multi, JSON.stringify(receipt));
+  await writeFile(verificationPath, JSON.stringify(verification));
+  const result = await workspace.compare();
+  assert.equal(result.exit_code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).graduate_to_qodo_v2, false);
+  await assert.rejects(access(forbiddenOutput), { code: "ENOENT" });
+  await writeFile(workspace.multi, receiptBytes);
+  await writeFile(verificationPath, verificationBytes);
+  const recovered = await workspace.compare();
+  assert.equal(recovered.exit_code, 0, recovered.stderr);
+  assert.equal(JSON.parse(recovered.stdout).graduate_to_qodo_v2, true);
+});
