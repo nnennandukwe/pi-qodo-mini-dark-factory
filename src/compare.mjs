@@ -74,7 +74,11 @@ async function savedEvidence(receipt, receiptPath) {
     task.verification.every((expected) => {
       const check = checks.find((candidate) => candidate.id === expected.id);
       const expectedArgv = expected.argv.map((part) => part.replaceAll("{harness_root}", harnessRoot));
-      return check && check.required === expected.required && isDeepStrictEqual(check.argv, expectedArgv) &&
+      const completeResult = check && Number.isInteger(check.exit_code) &&
+        typeof check.timed_out === "boolean" && typeof check.stdout_truncated === "boolean" &&
+        typeof check.stderr_truncated === "boolean" &&
+        (check.spawn_error === null || typeof check.spawn_error === "string");
+      return completeResult && check.required === expected.required && isDeepStrictEqual(check.argv, expectedArgv) &&
         (!expected.required || commandSucceeded(check));
     });
   let patchMatches = false;

@@ -76,6 +76,9 @@ test("comparison rejects unrelated receipts and incomplete saved evidence, then 
     ["wrong oracle root", multiVerification, (verification) => { verification.checks[0].argv[2] = "/other/oracles/session-expiry.mjs"; }],
     ["interrupted check", multiVerification, (verification) => { verification.checks[0].exit_code = null; verification.checks[0].signal = "SIGTERM"; }],
     ["timeout with zero exit", baselineVerification, (verification) => { verification.checks[0].timed_out = true; verification.checks[0].exit_code = 0; }],
+    ...["timed_out", "spawn_error", "stdout_truncated", "stderr_truncated"].map((marker) =>
+      [`missing ${marker}`, multiVerification, (verification) => { delete verification.checks[0][marker]; }]),
+    ["invalid timeout marker", baselineVerification, (verification) => { verification.checks[0].timed_out = 0; }],
   ];
   for (const [name, file, mutate, outcome] of cases) {
     await t.test(name, async () => {
@@ -161,6 +164,16 @@ test("comparison preserves successful tasks with only optional checks", async (t
   const result = await workspace.compare();
   assert.equal(result.exit_code, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).graduate_to_qodo_v2, true);
+  const file = path.join(path.dirname(workspace.multi), "verification.json");
+  const original = await readFile(file, "utf8");
+  for (const field of ["timed_out", "spawn_error", "stdout_truncated", "stderr_truncated", "exit_code"]) {
+    const verification = JSON.parse(original);
+    delete verification.checks[0][field];
+    await writeFile(file, JSON.stringify(verification));
+    assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, false, field);
+  }
+  await writeFile(file, original);
+  assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, true);
 });
 
 test("comparison requires identical fixture contents and recovers after restoring them", async (t) => {
