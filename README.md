@@ -28,6 +28,8 @@ Task verification IDs must be unique; both runners reject duplicates before crea
 
 Comparison checks each recorded argument list against the task command, expanding `{harness_root}` from the saved verification record. Older records use the harness root implied by the original run directory. Keep those older runs at their original location. The saved diff must match the subject digest; when that digest includes untracked files, comparison also needs the run's `repo/` directory to reconstruct and verify their contents. New verification records retain the original harness root so complete run directories can be moved together.
 
+Both runners recheck changed files after verification and reject files outside the implementation report or task scope. Comparison checks the recorded file lists against the saved patch and any untracked-file evidence.
+
 ## Architecture
 
 | Stage | Runtime | Authority |

@@ -279,3 +279,88 @@ test("comparison never interprets a saved base as a Git option", async (t) => {
   assert.equal(recovered.exit_code, 0, recovered.stderr);
   assert.equal(JSON.parse(recovered.stdout).graduate_to_qodo_v2, true);
 });
+
+test("comparison checks file lists against patch evidence", async (t) => {
+  const workspace = await comparisonWorkspace(t);
+  const verificationPath = path.join(path.dirname(workspace.multi), "verification.json");
+  const receiptBytes = await readFile(workspace.multi);
+  const verificationBytes = await readFile(verificationPath);
+  const receipt = JSON.parse(receiptBytes);
+  const verification = JSON.parse(verificationBytes);
+  receipt.verified_subject.changed_files = ["tests/session.test.ts"];
+  verification.changed_files = receipt.verified_subject.changed_files;
+  await writeFile(workspace.multi, JSON.stringify(receipt));
+  await writeFile(verificationPath, JSON.stringify(verification));
+  const result = await workspace.compare();
+  assert.equal(result.exit_code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).graduate_to_qodo_v2, false);
+  await writeFile(workspace.multi, receiptBytes);
+  await writeFile(verificationPath, verificationBytes);
+  assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, true);
+});
+
+test("both runners reject files created outside the implementation during verification", async (t) => {
+  for (const kind of ["workflow", "baseline"]) {
+    await t.test(kind, async (t) => {
+      const workspace = await cliWorkspace(t);
+      const taskPath = path.join(workspace.cwd, "tasks/reject-expired-session-token.json");
+      const task = JSON.parse(await readFile(taskPath, "utf8"));
+      task.verification = [{ id: "generates-file", required: true, argv: [process.execPath, "-e",
+        "require('node:fs').writeFileSync('generated.txt', 'verification output')"] }];
+      await writeFile(taskPath, JSON.stringify(task));
+      const scripted = new ScriptedRunner();
+      const runner = { run: (role, context) => scripted.run(role === "baseline" ? "implementer" : role, context) };
+      const options = { projectRoot: workspace.cwd, taskPath, runner };
+      const result = kind === "workflow"
+        ? await runPilot({ ...options, runnerName: "scripted" }) : await runBaseline(options);
+      assert.equal(result.receipt.success, false);
+      const verification = JSON.parse(await readFile(path.join(result.artifactsDir, "verification.json"), "utf8"));
+      assert.ok(verification.changed_files.includes("generated.txt"));
+      assert.match(JSON.stringify(result.receipt.gates), /out-of-scope files changed: generated.txt/);
+      task.verification[0].argv = [process.execPath, "-e", "process.exit(0)"];
+      await writeFile(taskPath, JSON.stringify(task));
+      const recovered = kind === "workflow"
+        ? await runPilot({ ...options, runnerName: "scripted" }) : await runBaseline(options);
+      assert.equal(recovered.receipt.success, true);
+    });
+  }
+});
+
+test("comparison accepts verified patches containing only new files", async (t) => {
+  const workspace = await cliWorkspace(t);
+  const task = JSON.parse(await readFile(path.join(workspace.cwd, "tasks/reject-expired-session-token.json"), "utf8"));
+  const addedFile = "tests/added.test.mjs";
+  task.title = "Add a fixture test";
+  task.acceptance_criteria = ["The added fixture test passes"];
+  task.files_allowed = task.files_expected = task.required_test_files = [addedFile];
+  task.verification = [{ id: "added-test", required: true, argv: [process.execPath, "--test", addedFile] }];
+  const taskPath = path.join(workspace.cwd, "new-file-task.json");
+  await writeFile(taskPath, JSON.stringify(task));
+  const scripted = new ScriptedRunner();
+  const runner = { run: async (role, context) => {
+    const result = await scripted.run(role === "baseline" ? "implementer" : role, context);
+    if (role === "planner") {
+      result.output.affected_files = [addedFile];
+      result.output.acceptance_criteria = task.acceptance_criteria;
+    } else if (["implementer", "baseline"].includes(role)) {
+      const restored = await runCommand(["git", "restore", "src/session.ts", "tests/session.test.ts"], { cwd: context.cwd });
+      assert.equal(restored.exit_code, 0, restored.stderr);
+      await writeFile(path.join(context.cwd, addedFile), 'import test from "node:test"; test("fixture", () => {});\n');
+      result.output.changed_files = [addedFile];
+    }
+    return result;
+  } };
+  const options = { projectRoot: workspace.cwd, taskPath, runner };
+  const multi = await runPilot({ ...options, runnerName: "scripted" });
+  const baseline = await runBaseline(options);
+  assert.equal(multi.receipt.success, true);
+  assert.equal(baseline.receipt.success, true);
+  assert.equal(await readFile(path.join(multi.artifactsDir, "diff.patch"), "utf8"), "");
+  const acceptance = await runCommand([process.execPath, "src/cli.mjs", "acceptance"], workspace);
+  assert.equal(acceptance.exit_code, 0, acceptance.stderr);
+  const result = await runCommand([process.execPath, "src/compare.mjs",
+    "--multi", path.join(multi.artifactsDir, "receipt.json"), "--baseline", path.join(baseline.artifactsDir, "receipt.json"),
+    "--output", "comparison.json"], workspace);
+  assert.equal(result.exit_code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).graduate_to_qodo_v2, true);
+});

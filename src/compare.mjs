@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import { validateTask } from "./contracts.mjs";
 import { patchEvidence } from "./git.mjs";
 import { hasCompleteUsage } from "./usage.mjs";
-import { commandSucceeded } from "./process.mjs";
+import { commandSucceeded, runCommand } from "./process.mjs";
 
 const HELP = `Usage: node src/compare.mjs --multi <receipt> --baseline <receipt> --output <json>
 
@@ -69,10 +69,16 @@ async function savedEvidence(receipt, receiptPath) {
         (!expected.required || commandSucceeded(check));
     });
   let patchMatches = false;
-  if (receipt.artifact_paths?.diff) {
-    const diff = await readFile(path.join(runDir, receipt.artifact_paths.diff), "utf8");
+  if (receipt.artifact_paths?.diff && matchesSubject) {
+    const diffPath = path.join(runDir, receipt.artifact_paths.diff);
+    const diff = await readFile(diffPath, "utf8");
+    const stats = diff.length === 0 ? null
+      : await runCommand(["git", "apply", "--numstat", "-z", "--", diffPath], { cwd: runDir });
+    const rows = (stats?.stdout ?? "").split("\0").filter(Boolean);
+    const validStats = (stats === null || commandSucceeded(stats)) && rows.every((row) => /^(\d+|-)\t(\d+|-)\t.+/s.test(row));
+    const patchFiles = rows.map((row) => row.slice(row.indexOf("\t", row.indexOf("\t") + 1) + 1));
     patchMatches = createHash("sha256").update(diff).digest("hex") === subject?.patch_digest;
-    if (!patchMatches && matchesSubject) {
+    if (!patchMatches) {
       // The canonical digest also includes untracked files, which aren't in diff.patch.
       const repoDir = path.join(runDir, "repo");
       let current;
@@ -82,7 +88,10 @@ async function savedEvidence(receipt, receiptPath) {
         throw new Error(`Can't verify saved patch evidence in ${repoDir}: ${error.message}. Restore the run repository and retry.`, { cause: error });
       }
       patchMatches = current.patch === diff && current.digest === subject.patch_digest;
+      patchFiles.push(...current.untracked_files);
     }
+    patchMatches = patchMatches && validStats &&
+      isDeepStrictEqual([...new Set(patchFiles)].sort(), [...subject.changed_files].sort());
   }
   return { task, passed: verification?.evidence_complete === true && matchesSubject && Boolean(completeChecks) && patchMatches };
 }

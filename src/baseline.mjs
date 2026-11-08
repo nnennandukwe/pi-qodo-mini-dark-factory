@@ -81,6 +81,8 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
     }
     const verificationCommandsDurationMs = Math.round(performance.now() - verificationStarted);
     const timeToVerificationMs = Math.round(performance.now() - started);
+    actualChangedFiles = await changedFiles(repoDir, baseSha);
+    implementationGate = validateImplementationReport(agentResult.output, task, actualChangedFiles);
     verification = {
       task_id: task.id, base_sha: baseSha, patch_digest: null,
       harness_root: projectRoot,

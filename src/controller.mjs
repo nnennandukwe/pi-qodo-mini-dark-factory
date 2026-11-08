@@ -242,17 +242,19 @@ export async function runPilot({
     verification.evidence_complete = true;
     await writeJson(path.join(artifactsDir, "verification.json"), verification);
     const failedRequired = checks.filter((check) => check.required && !commandSucceeded(check));
+    const verifiedImplementation = validateImplementationReport(implementerResult.output, task, verification.changed_files);
+    const verificationPassed = failedRequired.length === 0 && verifiedImplementation.ok;
     gate(
       "verification",
-      failedRequired.length === 0,
-      failedRequired.map((check) => `${check.id}: ${commandFailure(check)}`),
+      verificationPassed,
+      [...failedRequired.map((check) => `${check.id}: ${commandFailure(check)}`), ...verifiedImplementation.errors],
       {
         artifact: "artifacts/verification.json",
         required_checks: checks.filter((check) => check.required).map((check) => check.id),
         patch_digest: evidence.digest,
       },
     );
-    if (failedRequired.length > 0) {
+    if (!verificationPassed) {
       move("VERIFICATION_FAILED", { failed_checks: failedRequired.map((check) => check.id) });
       return finish();
     }
