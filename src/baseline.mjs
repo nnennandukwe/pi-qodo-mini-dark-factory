@@ -119,9 +119,9 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
       gates: {
         implementation: implementationGate,
         verification: {
-          passed: failedChecks.length === 0,
+          passed: success,
           failed_checks: failedChecks.map((check) => check.id),
-          reasons: failedChecks.map((check) => `${check.id}: ${commandFailure(check)}`),
+          reasons: [...failedChecks.map((check) => `${check.id}: ${commandFailure(check)}`), ...implementationGate.errors],
         },
       },
       usage: hasCompleteUsage(agentResult.evidence) ? agentResult.evidence.usage : null,

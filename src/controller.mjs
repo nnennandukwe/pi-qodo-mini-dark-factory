@@ -244,10 +244,11 @@ export async function runPilot({
     const failedRequired = checks.filter((check) => check.required && !commandSucceeded(check));
     const verifiedImplementation = validateImplementationReport(implementerResult.output, task, verification.changed_files);
     const verificationPassed = failedRequired.length === 0 && verifiedImplementation.ok;
+    const verificationReasons = [...failedRequired.map((check) => `${check.id}: ${commandFailure(check)}`), ...verifiedImplementation.errors];
     gate(
       "verification",
       verificationPassed,
-      [...failedRequired.map((check) => `${check.id}: ${commandFailure(check)}`), ...verifiedImplementation.errors],
+      verificationReasons,
       {
         artifact: "artifacts/verification.json",
         required_checks: checks.filter((check) => check.required).map((check) => check.id),
@@ -255,7 +256,7 @@ export async function runPilot({
       },
     );
     if (!verificationPassed) {
-      move("VERIFICATION_FAILED", { failed_checks: failedRequired.map((check) => check.id) });
+      move("VERIFICATION_FAILED", { failed_checks: failedRequired.map((check) => check.id), reasons: verificationReasons });
       return finish();
     }
     verifiedSubject = {

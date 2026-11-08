@@ -362,6 +362,13 @@ test("both runners reject files created outside the implementation during verifi
       const verification = JSON.parse(await readFile(path.join(result.artifactsDir, "verification.json"), "utf8"));
       assert.ok(verification.changed_files.includes("generated.txt"));
       assert.match(JSON.stringify(result.receipt.gates), /out-of-scope files changed: generated.txt/);
+      if (kind === "baseline") {
+        assert.equal(result.receipt.gates.verification.passed, false);
+        assert.match(result.receipt.gates.verification.reasons.join("\n"), /out-of-scope files changed: generated.txt/);
+      } else {
+        const failure = result.receipt.state_history.find((entry) => entry.event === "VERIFICATION_FAILED");
+        assert.match(failure.details.reasons.join("\n"), /out-of-scope files changed: generated.txt/);
+      }
       task.verification[0].argv = [process.execPath, "-e", "process.exit(0)"];
       await writeFile(taskPath, JSON.stringify(task));
       const recovered = kind === "workflow"
