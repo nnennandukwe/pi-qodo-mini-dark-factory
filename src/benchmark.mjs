@@ -3,6 +3,7 @@ import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs
 import path from "node:path";
 
 import { hasCompleteUsage } from "./usage.mjs";
+import { assertRegularFileWithinRoot, resolveRunArtifact } from "./artifacts.mjs";
 import { commandSucceeded } from "./process.mjs";
 import { validateImplementationReport, validateTask } from "./contracts.mjs";
 
@@ -112,55 +113,6 @@ async function readJsonIfPresent(file, label = "JSON file") {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
-}
-
-async function assertRegularFileWithinRoot(file, root, label) {
-  const resolvedRoot = path.resolve(root);
-  const resolvedFile = path.resolve(file);
-  if (!resolvedFile.startsWith(`${resolvedRoot}${path.sep}`)) {
-    throw new Error(`${label} path escapes its trusted root: ${file}`);
-  }
-
-  const rootStat = await lstat(resolvedRoot);
-  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
-    throw new Error(`${label} root must be a real directory, not a symlink: ${resolvedRoot}`);
-  }
-
-  const components = path.relative(resolvedRoot, resolvedFile).split(path.sep);
-  let current = resolvedRoot;
-  for (const [index, component] of components.entries()) {
-    current = path.join(current, component);
-    const stat = await lstat(current);
-    const final = index === components.length - 1;
-    if (stat.isSymbolicLink()) {
-      if (final) throw new Error(`${label} must be a regular file, not a symlink: ${current}`);
-      throw new Error(`${label} path must not contain symlinks: ${current}`);
-    }
-    if (final && !stat.isFile()) {
-      throw new Error(`${label} must be a regular file: ${current}`);
-    }
-    if (!final && !stat.isDirectory()) {
-      throw new Error(`${label} path component must be a directory: ${current}`);
-    }
-  }
-
-  const [realRoot, realFile] = await Promise.all([realpath(resolvedRoot), realpath(resolvedFile)]);
-  if (!realFile.startsWith(`${realRoot}${path.sep}`)) {
-    throw new Error(`${label} path escapes its trusted root: ${file}`);
-  }
-  return resolvedFile;
-}
-
-async function resolveRunArtifact(runDir, relativePath, label) {
-  if (!nonEmptyString(relativePath) || path.isAbsolute(relativePath)) {
-    throw new Error(`${label} artifact path must be relative to the run directory`);
-  }
-  const root = path.resolve(runDir);
-  const resolved = path.resolve(root, relativePath);
-  if (!resolved.startsWith(`${root}${path.sep}`)) {
-    throw new Error(`${label} artifact path escapes the run directory: ${relativePath}`);
-  }
-  return assertRegularFileWithinRoot(resolved, root, `${label} artifact`);
 }
 
 async function readRunJsonIfPresent(runDir, relativePath, label) {

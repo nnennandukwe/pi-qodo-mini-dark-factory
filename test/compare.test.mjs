@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -172,7 +172,17 @@ test("comparison preserves successful tasks with only optional checks", async (t
     delete verification.checks[0][field];
     await writeFile(file, JSON.stringify(verification));
     assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, false, field);
+    const comparison = JSON.parse(await readFile(workspace.output, "utf8"));
+    assert.equal(comparison.multi_agent.required_checks_passed, true);
+    assert.equal(comparison.multi_agent.evidence_valid, false);
   }
+  const missingOptionalRecord = JSON.parse(original);
+  missingOptionalRecord.checks[0] = null;
+  await writeFile(file, JSON.stringify(missingOptionalRecord));
+  assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, false);
+  const comparison = JSON.parse(await readFile(workspace.output, "utf8"));
+  assert.equal(comparison.multi_agent.required_checks_passed, true);
+  assert.equal(comparison.multi_agent.evidence_valid, false);
   await writeFile(file, original);
   assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, true);
 });
@@ -224,11 +234,57 @@ test("comparison checks saved tracked patches and preserves output on missing fi
     await writeFile(patchPath, "another patch\n");
     const replaced = await workspace.compare();
     assert.equal(replaced.exit_code, 0, replaced.stderr);
+    const comparison = JSON.parse(await readFile(workspace.output, "utf8"));
+    const condition = receipt === workspace.multi ? "multi_agent" : "one_agent";
+    assert.equal(comparison[condition].required_checks_passed, true);
+    assert.equal(comparison[condition].evidence_valid, false);
     assert.equal(JSON.parse(replaced.stdout).graduate_to_qodo_v2, false);
     await writeFile(patchPath, original);
     const restored = await workspace.compare();
     assert.equal(restored.exit_code, 0, restored.stderr);
     assert.equal(JSON.parse(restored.stdout).graduate_to_qodo_v2, true);
+  }
+});
+
+test("comparison rejects artifacts borrowed from another matching run", async (t) => {
+  const workspace = await comparisonWorkspace(t);
+  assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, true);
+  const runDir = path.dirname(path.dirname(workspace.multi));
+  const repo = path.join(runDir, "repo");
+  const receiptBytes = await readFile(workspace.multi, "utf8");
+  const receipt = JSON.parse(receiptBytes);
+  const dates = await runCommand(["git", "show", "-s", "--format=%aI%n%cI", receipt.base_sha], { cwd: repo });
+  assert.equal(dates.exit_code, 0, dates.stderr);
+  const [authorDate, commitDate] = dates.stdout.trim().split("\n");
+  const other = await runCommand([process.execPath, "src/cli.mjs", "run", "--runner", "pi",
+    "--provider", "fixture", "--model", "fixture"], { ...workspace, env: { ...workspace.env,
+    GIT_AUTHOR_DATE: authorDate, GIT_COMMITTER_DATE: commitDate } });
+  assert.equal(other.exit_code, 0, other.stderr);
+  const otherReceiptPath = JSON.parse(other.stdout).receipt;
+  const otherReceipt = JSON.parse(await readFile(otherReceiptPath, "utf8"));
+  assert.equal(otherReceipt.base_sha, receipt.base_sha);
+  assert.equal(otherReceipt.verified_subject.patch_digest, receipt.verified_subject.patch_digest);
+  const otherRunDir = path.dirname(path.dirname(otherReceiptPath));
+  for (const artifact of ["task", "verification", "diff"]) {
+    const outputBefore = await readFile(workspace.output, "utf8");
+    const ownFile = path.join(runDir, receipt.artifact_paths[artifact]);
+    const otherFile = path.join(otherRunDir, otherReceipt.artifact_paths[artifact]);
+    await rename(ownFile, `${ownFile}-saved`);
+    const link = path.join(runDir, `borrowed-${artifact}`);
+    await symlink(otherFile, link);
+    for (const borrowedPath of [path.relative(runDir, otherFile), otherFile, path.basename(link)]) {
+      receipt.artifact_paths[artifact] = borrowedPath;
+      await writeFile(workspace.multi, JSON.stringify(receipt));
+      const rejected = await workspace.compare();
+      assert.equal(rejected.exit_code, 1, rejected.stdout || rejected.stderr);
+      assert.match(rejected.stderr, /relative|escapes|symlink/);
+      assert.equal(await readFile(workspace.output, "utf8"), outputBefore);
+    }
+    receipt.artifact_paths[artifact] = JSON.parse(receiptBytes).artifact_paths[artifact];
+    await writeFile(workspace.multi, receiptBytes);
+    await rename(`${ownFile}-saved`, ownFile);
+    await rm(link);
+    assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, true);
   }
 });
 

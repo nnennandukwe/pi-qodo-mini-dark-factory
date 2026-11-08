@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { validateTask } from "./contracts.mjs";
+import { resolveRunArtifact } from "./artifacts.mjs";
 import { patchEvidence } from "./git.mjs";
 import { hasCompleteUsage } from "./usage.mjs";
 import { commandSucceeded, runCommand } from "./process.mjs";
@@ -45,7 +46,7 @@ async function readJson(file) {
 async function savedEvidence(receipt, receiptPath) {
   const runDir = path.dirname(path.dirname(receiptPath));
   const readArtifact = async (name) => receipt.artifact_paths?.[name]
-    ? readJson(path.join(runDir, receipt.artifact_paths[name]))
+    ? readJson(await resolveRunArtifact(runDir, receipt.artifact_paths[name], name))
     : null;
   const [task, verification] = await Promise.all([readArtifact("task"), readArtifact("verification")]);
   const subject = receipt.verified_subject;
@@ -68,22 +69,27 @@ async function savedEvidence(receipt, receiptPath) {
     }
     fixtureBaseTree = tree.stdout.trim();
   }
-  const completeChecks = validTask && typeof harnessRoot === "string" && path.isAbsolute(harnessRoot) &&
-    Array.isArray(checks) && checks.every((check) => check && typeof check === "object") &&
-    checks.length === task.verification.length && new Set(checks.map((check) => check.id)).size === checks.length &&
-    task.verification.every((expected) => {
-      const check = checks.find((candidate) => candidate.id === expected.id);
-      const expectedArgv = expected.argv.map((part) => part.replaceAll("{harness_root}", harnessRoot));
-      const completeResult = check && Number.isInteger(check.exit_code) &&
-        typeof check.timed_out === "boolean" && typeof check.stdout_truncated === "boolean" &&
-        typeof check.stderr_truncated === "boolean" &&
-        (check.spawn_error === null || typeof check.spawn_error === "string");
-      return completeResult && check.required === expected.required && isDeepStrictEqual(check.argv, expectedArgv) &&
-        (!expected.required || commandSucceeded(check));
-    });
+  const readableChecks = validTask && typeof harnessRoot === "string" && path.isAbsolute(harnessRoot) &&
+    Array.isArray(checks);
+  const checkMatches = (expected) => {
+    const matching = checks.filter((candidate) => candidate?.id === expected.id);
+    if (matching.length !== 1) return false;
+    const [check] = matching;
+    const expectedArgv = expected.argv.map((part) => part.replaceAll("{harness_root}", harnessRoot));
+    const completeResult = Number.isInteger(check.exit_code) &&
+      typeof check.timed_out === "boolean" && typeof check.stdout_truncated === "boolean" &&
+      typeof check.stderr_truncated === "boolean" &&
+      (check.spawn_error === null || typeof check.spawn_error === "string");
+    return completeResult && check.required === expected.required && isDeepStrictEqual(check.argv, expectedArgv) &&
+      (!expected.required || commandSucceeded(check));
+  };
+  const requiredChecksPassed = readableChecks && task.verification.filter((check) => check.required).every(checkMatches);
+  const completeChecks = readableChecks && checks.every((check) => check && typeof check === "object") &&
+    checks.length === task.verification.length &&
+    new Set(checks.map((check) => check.id)).size === checks.length && task.verification.every(checkMatches);
   let patchMatches = false;
   if (receipt.artifact_paths?.diff && matchesSubject) {
-    const diffPath = path.join(runDir, receipt.artifact_paths.diff);
+    const diffPath = await resolveRunArtifact(runDir, receipt.artifact_paths.diff, "diff");
     const diff = await readFile(diffPath, "utf8");
     const stats = diff.length === 0 ? null
       : await runCommand(["git", "apply", "--numstat", "-z", "--", diffPath], { cwd: runDir });
@@ -106,8 +112,13 @@ async function savedEvidence(receipt, receiptPath) {
     patchMatches = patchMatches && validStats &&
       isDeepStrictEqual([...new Set(patchFiles)].sort(), [...subject.changed_files].sort());
   }
-  return { task, fixtureBaseTree,
-    passed: verification?.evidence_complete === true && matchesSubject && Boolean(completeChecks) && patchMatches };
+  const problems = [];
+  if (!completeChecks || verification?.evidence_complete !== true) {
+    problems.push("Saved verification results are incomplete, don't match the declared checks, or contain failed required commands.");
+  }
+  if (!matchesSubject) problems.push("Saved verification doesn't match the receipt's task and subject.");
+  if (matchesSubject && !patchMatches) problems.push("Saved patch evidence is missing or doesn't match the receipt.");
+  return { task, fixtureBaseTree, checksPassed: Boolean(requiredChecksPassed), passed: problems.length === 0, problems };
 }
 
 function workflowGatesPassed(receipt) {
@@ -162,8 +173,9 @@ async function main(tokens) {
     baseline.gates?.implementation?.ok !== true || baseline.gates?.verification?.passed !== true) {
     reasons.push("The baseline receipt lacks passing implementation and verification gates. Rerun the baseline.");
   }
-  if (!multiEvidence.passed) reasons.push("Multi-role verification or saved patch evidence is incomplete or doesn't match its task and subject. Rerun implementation and verification.");
-  if (!baselineEvidence.passed) reasons.push("Baseline verification or saved patch evidence is incomplete or doesn't match its task and subject. Rerun the baseline.");
+  for (const [label, evidence] of [["Multi-role", multiEvidence], ["Baseline", baselineEvidence]]) {
+    if (!evidence.passed) reasons.push(`${label}: ${evidence.problems.join(" ")} Restore the saved evidence or rerun the workflow.`);
+  }
   const graduate = reasons.length === 0;
 
   const comparison = {
@@ -190,7 +202,8 @@ async function main(tokens) {
       changed_files: multi.verified_subject?.changed_files ?? [],
       structured_plan: true,
       independent_review: true,
-      required_checks_passed: multiEvidence.passed,
+      required_checks_passed: multiEvidence.checksPassed,
+      evidence_valid: multiEvidence.passed,
     },
     one_agent: {
       run_id: baseline.run_id,
@@ -205,7 +218,8 @@ async function main(tokens) {
       changed_files: baseline.verified_subject?.changed_files ?? [],
       structured_plan: false,
       independent_review: false,
-      required_checks_passed: baselineEvidence.passed,
+      required_checks_passed: baselineEvidence.checksPassed,
+      evidence_valid: baselineEvidence.passed,
     },
     overhead: {
       wall_time_percent: percentDelta(multi.wall_time_ms, baseline.wall_time_ms),

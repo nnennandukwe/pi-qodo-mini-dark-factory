@@ -750,7 +750,7 @@ test("run observation rejects symlinked artifact path components", async (t) => 
         },
       },
     }),
-    /verification artifact path must not contain symlinks/,
+    /verification artifact path mustn't contain symlinks/,
   );
 });
 
