@@ -163,6 +163,38 @@ test("comparison preserves successful tasks with only optional checks", async (t
   assert.equal(JSON.parse(result.stdout).graduate_to_qodo_v2, true);
 });
 
+test("comparison requires identical fixture contents and recovers after restoring them", async (t) => {
+  const workspace = await comparisonWorkspace(t);
+  assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, true);
+  const previousOutput = await readFile(workspace.output, "utf8");
+  const extraFile = path.join(workspace.cwd, "fixtures/token-service/different-source.txt");
+  await writeFile(extraFile, "This fixture has different starting contents.\n");
+  const baselineArgs = [process.execPath, "src/cli.mjs", "baseline", "--provider", "fixture", "--model", "fixture"];
+  const changed = await runCommand(baselineArgs, workspace);
+  assert.equal(changed.exit_code, 0, changed.stderr);
+  const compareWith = (receipt) => runCommand([process.execPath, "src/compare.mjs", "--multi", workspace.multi,
+    "--baseline", receipt, "--output", workspace.output], workspace);
+  const rejected = await compareWith(JSON.parse(changed.stdout).receipt);
+  assert.equal(rejected.exit_code, 1, rejected.stderr || rejected.stdout);
+  assert.match(rejected.stderr, /matching fixture contents/);
+  assert.equal(await readFile(workspace.output, "utf8"), previousOutput);
+  await rm(extraFile);
+  const recovered = await runCommand(baselineArgs, { ...workspace, env: { ...workspace.env,
+    GIT_AUTHOR_DATE: "2001-01-01T00:00:00Z", GIT_COMMITTER_DATE: "2001-01-01T00:00:00Z" } });
+  assert.equal(recovered.exit_code, 0, recovered.stderr);
+  const restoredReceipt = JSON.parse(recovered.stdout).receipt;
+  const restored = JSON.parse(await readFile(restoredReceipt, "utf8"));
+  assert.notEqual(restored.base_sha, JSON.parse(await readFile(workspace.multi, "utf8")).base_sha);
+  assert.equal(JSON.parse((await compareWith(restoredReceipt)).stdout).graduate_to_qodo_v2, true);
+  const repo = path.join(path.dirname(path.dirname(restoredReceipt)), "repo");
+  await rename(repo, `${repo}-saved`);
+  const missing = await compareWith(restoredReceipt);
+  assert.equal(missing.exit_code, 1);
+  assert.match(missing.stderr, /Restore the run repository/);
+  await rename(`${repo}-saved`, repo);
+  assert.equal(JSON.parse((await compareWith(restoredReceipt)).stdout).graduate_to_qodo_v2, true);
+});
+
 test("comparison checks saved tracked patches and preserves output on missing files", async (t) => {
   const workspace = await comparisonWorkspace(t);
   assert.equal((await workspace.compare()).exit_code, 0);

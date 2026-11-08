@@ -59,6 +59,15 @@ async function savedEvidence(receipt, receiptPath) {
   const harnessRoot = verification?.harness_root ?? path.resolve(runDir, "../..");
   const validTask = validateTask(task).ok && task.id === receipt.task_id &&
     (!task.repository?.expected_base_sha || task.repository.expected_base_sha === receipt.base_sha);
+  let fixtureBaseTree = null;
+  if (validTask && task.fixture && matchesSubject) {
+    const repoDir = path.join(runDir, "repo");
+    const tree = await runCommand(["git", "rev-parse", "--verify", `${receipt.base_sha}^{tree}`], { cwd: repoDir });
+    if (!commandSucceeded(tree) || !/^[0-9a-f]{40}$/.test(tree.stdout.trim())) {
+      throw new Error(`Can't verify fixture base contents in ${repoDir}. Restore the run repository and retry.`);
+    }
+    fixtureBaseTree = tree.stdout.trim();
+  }
   const completeChecks = validTask && typeof harnessRoot === "string" && path.isAbsolute(harnessRoot) &&
     Array.isArray(checks) && checks.every((check) => check && typeof check === "object") &&
     checks.length === task.verification.length && new Set(checks.map((check) => check.id)).size === checks.length &&
@@ -93,7 +102,8 @@ async function savedEvidence(receipt, receiptPath) {
     patchMatches = patchMatches && validStats &&
       isDeepStrictEqual([...new Set(patchFiles)].sort(), [...subject.changed_files].sort());
   }
-  return { task, passed: verification?.evidence_complete === true && matchesSubject && Boolean(completeChecks) && patchMatches };
+  return { task, fixtureBaseTree,
+    passed: verification?.evidence_complete === true && matchesSubject && Boolean(completeChecks) && patchMatches };
 }
 
 function workflowGatesPassed(receipt) {
@@ -131,6 +141,10 @@ async function main(tokens) {
   if (multiEvidence.task && baselineEvidence.task && (!isDeepStrictEqual(multiEvidence.task, baselineEvidence.task) ||
     (multiEvidence.task.repository && multi.base_sha !== baseline.base_sha))) {
     throw new Error("Receipts must use the same task contract and repository base. Select matching task runs and retry the comparison.");
+  }
+  if (multiEvidence.fixtureBaseTree && baselineEvidence.fixtureBaseTree &&
+    multiEvidence.fixtureBaseTree !== baselineEvidence.fixtureBaseTree) {
+    throw new Error("Receipts must use matching fixture contents. Select runs from the same fixture version and retry the comparison.");
   }
   const acceptance = await readJson(path.resolve("evidence/v1/scripted-acceptance.json"));
   const sharedRuntime = (field) => multi.runtime?.[field] != null && multi.runtime[field] === baseline.runtime?.[field]
