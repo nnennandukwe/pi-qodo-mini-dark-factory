@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { validateTask } from "./contracts.mjs";
+import { patchEvidence } from "./git.mjs";
 import { hasCompleteUsage } from "./usage.mjs";
 import { commandSucceeded } from "./process.mjs";
 
@@ -41,8 +43,9 @@ async function readJson(file) {
 }
 
 async function savedEvidence(receipt, receiptPath) {
+  const runDir = path.dirname(path.dirname(receiptPath));
   const readArtifact = async (name) => receipt.artifact_paths?.[name]
-    ? readJson(path.join(path.dirname(path.dirname(receiptPath)), receipt.artifact_paths[name]))
+    ? readJson(path.join(runDir, receipt.artifact_paths[name]))
     : null;
   const [task, verification] = await Promise.all([readArtifact("task"), readArtifact("verification")]);
   const subject = receipt.verified_subject;
@@ -53,15 +56,35 @@ async function savedEvidence(receipt, receiptPath) {
     Array.isArray(subject.changed_files) && Array.isArray(verification?.changed_files) &&
     isDeepStrictEqual([...subject.changed_files].sort(), [...verification.changed_files].sort());
   const checks = verification?.checks;
+  const harnessRoot = verification?.harness_root ?? path.resolve(runDir, "../..");
   const validTask = validateTask(task).ok && task.id === receipt.task_id &&
     (!task.repository?.expected_base_sha || task.repository.expected_base_sha === receipt.base_sha);
-  const completeChecks = validTask && Array.isArray(checks) && checks.every((check) => check && typeof check === "object") &&
+  const completeChecks = validTask && typeof harnessRoot === "string" && path.isAbsolute(harnessRoot) &&
+    Array.isArray(checks) && checks.every((check) => check && typeof check === "object") &&
     checks.length === task.verification.length && new Set(checks.map((check) => check.id)).size === checks.length &&
     task.verification.every((expected) => {
       const check = checks.find((candidate) => candidate.id === expected.id);
-      return check && check.required === expected.required && (!expected.required || commandSucceeded(check));
+      const expectedArgv = expected.argv.map((part) => part.replaceAll("{harness_root}", harnessRoot));
+      return check && check.required === expected.required && isDeepStrictEqual(check.argv, expectedArgv) &&
+        (!expected.required || commandSucceeded(check));
     });
-  return { task, passed: verification?.evidence_complete === true && matchesSubject && Boolean(completeChecks) };
+  let patchMatches = false;
+  if (receipt.artifact_paths?.diff) {
+    const diff = await readFile(path.join(runDir, receipt.artifact_paths.diff), "utf8");
+    patchMatches = createHash("sha256").update(diff).digest("hex") === subject?.patch_digest;
+    if (!patchMatches && matchesSubject) {
+      // The canonical digest also includes untracked files, which aren't in diff.patch.
+      const repoDir = path.join(runDir, "repo");
+      let current;
+      try {
+        current = await patchEvidence(repoDir, receipt.base_sha);
+      } catch (error) {
+        throw new Error(`Can't verify saved patch evidence in ${repoDir}: ${error.message}. Restore the run repository and retry.`, { cause: error });
+      }
+      patchMatches = current.patch === diff && current.digest === subject.patch_digest;
+    }
+  }
+  return { task, passed: verification?.evidence_complete === true && matchesSubject && Boolean(completeChecks) && patchMatches };
 }
 
 function workflowGatesPassed(receipt) {
@@ -112,8 +135,8 @@ async function main(tokens) {
     baseline.gates?.implementation?.ok !== true || baseline.gates?.verification?.passed !== true) {
     reasons.push("The baseline receipt lacks passing implementation and verification gates. Rerun the baseline.");
   }
-  if (!multiEvidence.passed) reasons.push("Multi-role verification is incomplete or doesn't match its task and subject. Rerun implementation and verification.");
-  if (!baselineEvidence.passed) reasons.push("Baseline verification is incomplete or doesn't match its task and subject. Rerun the baseline.");
+  if (!multiEvidence.passed) reasons.push("Multi-role verification or saved patch evidence is incomplete or doesn't match its task and subject. Rerun implementation and verification.");
+  if (!baselineEvidence.passed) reasons.push("Baseline verification or saved patch evidence is incomplete or doesn't match its task and subject. Rerun the baseline.");
   const graduate = reasons.length === 0;
 
   const comparison = {

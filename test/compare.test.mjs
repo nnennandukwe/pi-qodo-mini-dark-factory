@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { access, copyFile, readFile, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
 import { runCommand } from "../src/process.mjs";
+import { runPilot } from "../src/controller.mjs";
+import { runBaseline } from "../src/baseline.mjs";
+import { ScriptedRunner } from "../src/scripted-runner.mjs";
 import { cliWorkspace } from "./helpers/workspace.mjs";
 
 async function comparisonWorkspace(t, configureTask = null) {
@@ -43,6 +46,16 @@ test("comparison rejects unrelated receipts and incomplete saved evidence, then 
   assert.equal(JSON.parse(control.stdout).graduate_to_qodo_v2, true);
   const multiVerification = path.join(path.dirname(workspace.multi), "verification.json");
   const baselineVerification = path.join(path.dirname(workspace.baseline), "verification.json");
+  for (const file of [multiVerification, baselineVerification]) {
+    const original = await readFile(file, "utf8");
+    const legacy = JSON.parse(original);
+    delete legacy.harness_root;
+    await writeFile(file, JSON.stringify(legacy));
+    const result = await workspace.compare();
+    assert.equal(result.exit_code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).graduate_to_qodo_v2, true);
+    await writeFile(file, original);
+  }
   const cases = [
     ["different task", workspace.baseline, (receipt) => { receipt.task_id = "another-task"; }, "error"],
     ["changed task contract", path.join(path.dirname(workspace.baseline), "task.json"), (task) => { task.acceptance_criteria.push("Another requirement"); }, "error"],
@@ -58,6 +71,9 @@ test("comparison rejects unrelated receipts and incomplete saved evidence, then 
     ["duplicate check", multiVerification, (verification) => { verification.checks.push(verification.checks[0]); }],
     ["incomplete verification", multiVerification, (verification) => { verification.evidence_complete = false; }],
     ["missing completion marker", baselineVerification, (verification) => { delete verification.evidence_complete; }],
+    ["wrong check command", multiVerification, (verification) => { verification.checks[1].argv = ["node", "--version"]; }],
+    ["missing check command", baselineVerification, (verification) => { delete verification.checks[0].argv; }],
+    ["wrong oracle root", multiVerification, (verification) => { verification.checks[0].argv[2] = "/other/oracles/session-expiry.mjs"; }],
     ["interrupted check", multiVerification, (verification) => { verification.checks[0].exit_code = null; verification.checks[0].signal = "SIGTERM"; }],
     ["timeout with zero exit", baselineVerification, (verification) => { verification.checks[0].timed_out = true; verification.checks[0].exit_code = 0; }],
   ];
@@ -145,6 +161,71 @@ test("comparison preserves successful tasks with only optional checks", async (t
   const result = await workspace.compare();
   assert.equal(result.exit_code, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).graduate_to_qodo_v2, true);
+});
+
+test("comparison checks saved tracked patches and preserves output on missing files", async (t) => {
+  const workspace = await comparisonWorkspace(t);
+  assert.equal((await workspace.compare()).exit_code, 0);
+  for (const receipt of [workspace.multi, workspace.baseline]) {
+    const patchPath = path.join(path.dirname(receipt), "diff.patch");
+    const original = await readFile(patchPath);
+    const previousOutput = await readFile(workspace.output);
+    await rm(patchPath);
+    const missing = await workspace.compare();
+    assert.equal(missing.exit_code, 1);
+    assert.ok(missing.stderr.includes(patchPath));
+    assert.deepEqual(await readFile(workspace.output), previousOutput);
+    await writeFile(patchPath, "another patch\n");
+    const replaced = await workspace.compare();
+    assert.equal(replaced.exit_code, 0, replaced.stderr);
+    assert.equal(JSON.parse(replaced.stdout).graduate_to_qodo_v2, false);
+    await writeFile(patchPath, original);
+    const restored = await workspace.compare();
+    assert.equal(restored.exit_code, 0, restored.stderr);
+    assert.equal(JSON.parse(restored.stdout).graduate_to_qodo_v2, true);
+  }
+});
+
+test("comparison binds untracked content and supports relocated run directories", async (t) => {
+  const workspace = await cliWorkspace(t);
+  const task = JSON.parse(await readFile(path.join(workspace.cwd, "tasks/reject-expired-session-token.json"), "utf8"));
+  task.files_allowed.push("notes.txt");
+  task.verification = [task.verification[0]];
+  const taskPath = path.join(workspace.cwd, "untracked-task.json");
+  await writeFile(taskPath, JSON.stringify(task));
+  const scripted = new ScriptedRunner();
+  const runner = { run: async (role, context) => {
+    const result = await scripted.run(role === "baseline" ? "implementer" : role, context);
+    if (["implementer", "baseline"].includes(role)) {
+      await writeFile(path.join(context.cwd, "notes.txt"), "verified notes\n");
+      result.output.changed_files.push("notes.txt");
+    }
+    return result;
+  } };
+  const options = { projectRoot: workspace.cwd, taskPath, runner };
+  const multi = await runPilot({ ...options, runnerName: "scripted" });
+  const baseline = await runBaseline(options);
+  assert.equal(multi.receipt.success, true);
+  assert.equal(baseline.receipt.success, true);
+  const acceptance = await runCommand([process.execPath, "src/cli.mjs", "acceptance"], workspace);
+  assert.equal(acceptance.exit_code, 0, acceptance.stderr);
+  const archive = path.join(workspace.cwd, "archive/retained-runs");
+  await mkdir(path.dirname(archive));
+  await rename(path.join(workspace.cwd, ".factory-runs"), archive);
+  const compare = () => runCommand([
+    process.execPath, "src/compare.mjs", "--multi", path.join(archive, multi.receipt.run_id, "artifacts/receipt.json"),
+    "--baseline", path.join(archive, baseline.receipt.run_id, "artifacts/receipt.json"), "--output", "comparison.json",
+  ], workspace);
+  assert.equal(JSON.parse((await compare()).stdout).graduate_to_qodo_v2, true);
+  for (const result of [multi, baseline]) {
+    const notes = path.join(archive, result.receipt.run_id, "repo/notes.txt");
+    await writeFile(notes, "changed after verification\n");
+    const changed = await compare();
+    assert.equal(changed.exit_code, 0, changed.stderr);
+    assert.equal(JSON.parse(changed.stdout).graduate_to_qodo_v2, false);
+    await writeFile(notes, "verified notes\n");
+    assert.equal(JSON.parse((await compare()).stdout).graduate_to_qodo_v2, true);
+  }
 });
 
 test("both runners reject duplicate verification IDs before writing runs", async (t) => {

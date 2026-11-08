@@ -83,6 +83,7 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
     const timeToVerificationMs = Math.round(performance.now() - started);
     verification = {
       task_id: task.id, base_sha: baseSha, patch_digest: null,
+      harness_root: projectRoot,
       changed_files: actualChangedFiles, checks, evidence_complete: false,
     };
     await writeJson(path.join(artifactsDir, "verification.json"), verification);

@@ -26,6 +26,8 @@ Comparison requires matching task IDs and saved task contracts. Remote runs must
 
 Task verification IDs must be unique; both runners reject duplicates before creating run artifacts. Tasks may contain only optional checks. Comparison preserves that contract while requiring every declared result to be present.
 
+Comparison checks each recorded argument list against the task command, expanding `{harness_root}` from the saved verification record. Older records use the harness root implied by the original run directory. Keep those older runs at their original location. The saved diff must match the subject digest; when that digest includes untracked files, comparison also needs the run's `repo/` directory to reconstruct and verify their contents. New verification records retain the original harness root so complete run directories can be moved together.
+
 ## Architecture
 
 | Stage | Runtime | Authority |
