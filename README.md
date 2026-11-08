@@ -24,6 +24,8 @@ npm run evidence:compare -- --multi <workflow-receipt> --baseline <baseline-rece
 
 Comparison requires matching task IDs and saved task contracts. Remote runs must share a repository base; local fixture runs can have different commit timestamps. Each run's verification must match its own recorded base, patch digest, and changed files, include every declared check once, and pass every required check. Graduation also requires complete passing workflow gates and scripted acceptance. Incomplete evidence produces `graduate_to_qodo_v2: false` with recovery steps in `graduation.reasons`. Mismatched task inputs and malformed JSON exit nonzero before replacing an existing comparison; malformed-JSON errors name the file to repair. Help tokens in path-value positions are treated as paths.
 
+Task verification IDs must be unique; both runners reject duplicates before creating run artifacts. Tasks may contain only optional checks. Comparison preserves that contract while requiring every declared result to be present.
+
 ## Architecture
 
 | Stage | Runtime | Authority |

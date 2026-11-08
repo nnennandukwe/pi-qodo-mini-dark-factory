@@ -57,7 +57,7 @@ async function savedEvidence(receipt, receiptPath) {
     (!task.repository?.expected_base_sha || task.repository.expected_base_sha === receipt.base_sha);
   const completeChecks = validTask && Array.isArray(checks) && checks.every((check) => check && typeof check === "object") &&
     checks.length === task.verification.length && new Set(checks.map((check) => check.id)).size === checks.length &&
-    task.verification.some((expected) => expected.required) && task.verification.every((expected) => {
+    task.verification.every((expected) => {
       const check = checks.find((candidate) => candidate.id === expected.id);
       return check && check.required === expected.required && (!expected.required || commandSucceeded(check));
     });

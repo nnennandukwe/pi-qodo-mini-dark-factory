@@ -6,15 +6,23 @@ import test from "node:test";
 import { runCommand } from "../src/process.mjs";
 import { cliWorkspace } from "./helpers/workspace.mjs";
 
-async function comparisonWorkspace(t) {
+async function comparisonWorkspace(t, configureTask = null) {
   const workspace = await cliWorkspace(t);
   workspace.env.FACTORY_TEST_PI_SCENARIO = "happy";
+  const taskFlags = [];
+  if (configureTask) {
+    const task = JSON.parse(await readFile(path.join(workspace.cwd, "tasks/reject-expired-session-token.json"), "utf8"));
+    configureTask(task);
+    const taskPath = path.join(workspace.cwd, "comparison-task.json");
+    await writeFile(taskPath, JSON.stringify(task));
+    taskFlags.push("--task", taskPath);
+  }
   const receipts = [];
   for (const args of [
     ["run", "--runner", "pi", "--provider", "fixture", "--model", "fixture"],
     ["baseline", "--provider", "fixture", "--model", "fixture"],
   ]) {
-    const result = await runCommand([process.execPath, "src/cli.mjs", ...args], workspace);
+    const result = await runCommand([process.execPath, "src/cli.mjs", ...args, ...taskFlags], workspace);
     assert.equal(result.exit_code, 0, result.stderr);
     receipts.push(JSON.parse(result.stdout).receipt);
   }
@@ -128,4 +136,38 @@ test("run treats help tokens in task path positions as paths", async (t) => {
   const recovered = await runCommand(argv, workspace);
   assert.equal(recovered.exit_code, 0, recovered.stderr);
   assert.equal(JSON.parse(recovered.stdout).terminal_status, "COMPLETE");
+});
+
+test("comparison preserves successful tasks with only optional checks", async (t) => {
+  const workspace = await comparisonWorkspace(t, (task) => {
+    task.verification.forEach((check) => { check.required = false; });
+  });
+  const result = await workspace.compare();
+  assert.equal(result.exit_code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).graduate_to_qodo_v2, true);
+});
+
+test("both runners reject duplicate verification IDs before writing runs", async (t) => {
+  for (const command of ["run", "baseline"]) {
+    await t.test(command, async (t) => {
+      const workspace = await cliWorkspace(t);
+      workspace.env.FACTORY_TEST_PI_SCENARIO = "happy";
+      const taskPath = path.join(workspace.cwd, "tasks/reject-expired-session-token.json");
+      const original = await readFile(taskPath, "utf8");
+      const task = JSON.parse(original);
+      task.verification[1].id = task.verification[0].id;
+      await writeFile(taskPath, JSON.stringify(task));
+      const args = command === "run" ? ["run"] : ["baseline", "--provider", "fixture", "--model", "fixture"];
+      const argv = [process.execPath, "src/cli.mjs", ...args];
+      const result = await runCommand(argv, workspace);
+      assert.equal(result.exit_code, 1, result.stderr || result.stdout);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, /duplicate.*check IDs/);
+      await assert.rejects(access(path.join(workspace.cwd, ".factory-runs")), { code: "ENOENT" });
+      await writeFile(taskPath, original);
+      const recovered = await runCommand(argv, workspace);
+      assert.equal(recovered.exit_code, 0, recovered.stderr);
+      assert.equal(JSON.parse(recovered.stdout).terminal_status, "COMPLETE");
+    });
+  }
 });

@@ -80,6 +80,9 @@ export function validateTask(task) {
         errors.push(`task.verification[${index}].required must be boolean`);
       }
     }
+    if (!unique(task.verification.map((check) => check?.id))) {
+      errors.push("task.verification contains duplicate check IDs");
+    }
   }
 
   for (const key of ["files_expected", "files_allowed", "required_test_files"]) {
