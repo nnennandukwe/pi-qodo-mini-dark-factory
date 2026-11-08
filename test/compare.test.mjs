@@ -6,6 +6,7 @@ import test from "node:test";
 import { runCommand } from "../src/process.mjs";
 import { runPilot } from "../src/controller.mjs";
 import { runBaseline } from "../src/baseline.mjs";
+import { observationFromRun, summarizeBenchmark } from "../src/benchmark.mjs";
 import { ScriptedRunner } from "../src/scripted-runner.mjs";
 import { cliWorkspace } from "./helpers/workspace.mjs";
 
@@ -369,11 +370,22 @@ test("both runners reject files created outside the implementation during verifi
         const failure = result.receipt.state_history.find((entry) => entry.event === "VERIFICATION_FAILED");
         assert.match(failure.details.reasons.join("\n"), /out-of-scope files changed: generated.txt/);
       }
+      const condition = kind === "workflow" ? "factory" : "baseline";
+      const observed = await observationFromRun({ projectRoot: workspace.cwd, task, condition, runResult: result });
+      assert.equal(observed.success, false);
+      assert.equal(observed.required_checks_passed, true);
+      assert.equal(observed.verification_passed, false);
+      assert.match(observed.implementation_errors.join("\n"), /out-of-scope files changed: generated.txt/);
+      assert.equal(observed.verifier_catch, true);
+      assert.equal(summarizeBenchmark({ expected_runs: 1 }, [{ ...observed, condition }]).conditions[condition].completion_rate, 0);
       task.verification[0].argv = [process.execPath, "-e", "process.exit(0)"];
       await writeFile(taskPath, JSON.stringify(task));
       const recovered = kind === "workflow"
         ? await runPilot({ ...options, runnerName: "scripted" }) : await runBaseline(options);
       assert.equal(recovered.receipt.success, true);
+      const recoveredObservation = await observationFromRun({ projectRoot: workspace.cwd, task, condition, runResult: recovered });
+      assert.equal(recoveredObservation.verification_passed, true);
+      assert.equal(recoveredObservation.required_checks_passed, true);
     });
   }
 });

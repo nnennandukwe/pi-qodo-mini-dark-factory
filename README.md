@@ -28,7 +28,7 @@ Task verification IDs must be unique; both runners reject duplicates before crea
 
 Saved check results must include an integer exit code, explicit boolean timeout and truncation markers, and a spawn-error value, including for optional checks. Comparison checks each recorded argument list against the task command, expanding `{harness_root}` from the saved verification record. Older records use the harness root implied by the original run directory. Keep those older runs at their original location. Fixture comparisons need each saved `repo/` directory to verify the base file tree. The saved diff must match the subject digest; when that digest includes untracked files, comparison also needs the run's `repo/` directory to reconstruct and verify their contents. New verification records retain the original harness root so complete run directories can be moved together.
 
-Both runners recheck changed files after verification and reject files outside the implementation report or task scope. Comparison checks the recorded file lists against the saved patch and any untracked-file evidence.
+Both runners recheck changed files after verification and reject files outside the implementation report or task scope. Comparison checks the recorded file lists against the saved patch and any untracked-file evidence. Benchmark records retain command-only `required_checks_passed` and add `verification_passed` plus `implementation_errors` for the full verification outcome. Scope failures count as verifier catches after an accepted implementation and remain resumable benchmark results. Older records keep their existing interpretation.
 
 ## Architecture
 
