@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { validateTask } from "./contracts.mjs";
 import { hasCompleteUsage } from "./usage.mjs";
 import { commandSucceeded } from "./process.mjs";
 
 const HELP = `Usage: node src/compare.mjs --multi <receipt> --baseline <receipt> --output <json>
 
 Compare saved workflow and baseline receipts using their verification evidence.
+Receipts must describe the same task contract. Graduation requires complete
+verification bound to each receipt's subject and every workflow gate to pass.
 `;
 
 function parseFlags(tokens) {
@@ -14,12 +18,13 @@ function parseFlags(tokens) {
   const allowed = new Set(["multi", "baseline", "output"]);
   for (let index = 0; index < tokens.length; index += 2) {
     const token = tokens[index];
+    if (["--help", "-h"].includes(token)) return { help: true };
     const name = token?.slice(2);
     if (!token?.startsWith("--") || !allowed.has(name)) {
       throw new Error(`Unknown option: ${token}. Use --help for comparison usage.`);
     }
     const value = tokens[index + 1];
-    if (!value || value.startsWith("--")) throw new Error(`Missing value for ${token}. Use --help for comparison usage.`);
+    if (!value || (value.startsWith("--") && allowed.has(value.slice(2)))) throw new Error(`Missing value for ${token}. Use --help for comparison usage.`);
     if (Object.hasOwn(flags, name)) throw new Error(`Repeated option: ${token}. Supply each path once.`);
     flags[name] = value;
   }
@@ -27,7 +32,42 @@ function parseFlags(tokens) {
 }
 
 async function readJson(file) {
-  return JSON.parse(await readFile(file, "utf8"));
+  const contents = await readFile(file, "utf8");
+  try {
+    return JSON.parse(contents);
+  } catch (error) {
+    throw new Error(`Invalid JSON in ${file}: ${error.message}. Repair this file and retry the comparison.`, { cause: error });
+  }
+}
+
+async function savedEvidence(receipt, receiptPath) {
+  const readArtifact = async (name) => receipt.artifact_paths?.[name]
+    ? readJson(path.join(path.dirname(path.dirname(receiptPath)), receipt.artifact_paths[name]))
+    : null;
+  const [task, verification] = await Promise.all([readArtifact("task"), readArtifact("verification")]);
+  const subject = receipt.verified_subject;
+  const matchesSubject = typeof receipt.base_sha === "string" && receipt.base_sha.length > 0 &&
+    typeof subject?.patch_digest === "string" && subject.patch_digest.length > 0 &&
+    subject.base_sha === receipt.base_sha && verification?.base_sha === receipt.base_sha &&
+    verification?.task_id === receipt.task_id && verification?.patch_digest === subject.patch_digest &&
+    Array.isArray(subject.changed_files) && Array.isArray(verification?.changed_files) &&
+    isDeepStrictEqual([...subject.changed_files].sort(), [...verification.changed_files].sort());
+  const checks = verification?.checks;
+  const validTask = validateTask(task).ok && task.id === receipt.task_id &&
+    (!task.repository?.expected_base_sha || task.repository.expected_base_sha === receipt.base_sha);
+  const completeChecks = validTask && Array.isArray(checks) && checks.every((check) => check && typeof check === "object") &&
+    checks.length === task.verification.length && new Set(checks.map((check) => check.id)).size === checks.length &&
+    task.verification.some((expected) => expected.required) && task.verification.every((expected) => {
+      const check = checks.find((candidate) => candidate.id === expected.id);
+      return check && check.required === expected.required && (!expected.required || commandSucceeded(check));
+    });
+  return { task, passed: verification?.evidence_complete === true && matchesSubject && Boolean(completeChecks) };
+}
+
+function workflowGatesPassed(receipt) {
+  const required = ["planner", "implementation", "verification", "evidence_freshness", "evidence_freshness_after_review", "review"];
+  return Array.isArray(receipt.gates) && receipt.gates.every((gate) => gate?.passed === true) &&
+    required.every((name) => receipt.gates.filter((gate) => gate.name === name).length === 1);
 }
 
 function percentDelta(current, baseline) {
@@ -36,11 +76,11 @@ function percentDelta(current, baseline) {
 }
 
 async function main(tokens) {
-  if (tokens.includes("--help") || tokens.includes("-h")) {
+  const flags = parseFlags(tokens);
+  if (flags.help) {
     process.stdout.write(HELP);
     return;
   }
-  const flags = parseFlags(tokens);
   if (!flags.multi || !flags.baseline || !flags.output) {
     throw new Error("Usage: node src/compare.mjs --multi <receipt> --baseline <receipt> --output <json>");
   }
@@ -48,28 +88,33 @@ async function main(tokens) {
   const multiPath = path.resolve(flags.multi);
   const baselinePath = path.resolve(flags.baseline);
   const [multi, baseline] = await Promise.all([readJson(multiPath), readJson(baselinePath)]);
+  if (typeof multi?.task_id !== "string" || !multi.task_id.trim() || multi.task_id !== baseline?.task_id) {
+    throw new Error("Receipts must describe the same task. Select matching task receipts and retry the comparison.");
+  }
   const multiUsage = hasCompleteUsage(multi) ? multi.usage : null;
   const baselineUsage = hasCompleteUsage(baseline) ? baseline.usage : null;
-  const verificationFor = async (receipt, receiptPath) => receipt.artifact_paths?.verification
-    ? readJson(path.join(path.dirname(path.dirname(receiptPath)), receipt.artifact_paths.verification))
-    : { checks: [], evidence_complete: false };
-  const [multiVerification, baselineVerification] = await Promise.all([
-    verificationFor(multi, multiPath), verificationFor(baseline, baselinePath),
+  const [multiEvidence, baselineEvidence] = await Promise.all([
+    savedEvidence(multi, multiPath), savedEvidence(baseline, baselinePath),
   ]);
+  if (multiEvidence.task && baselineEvidence.task && (!isDeepStrictEqual(multiEvidence.task, baselineEvidence.task) ||
+    (multiEvidence.task.repository && multi.base_sha !== baseline.base_sha))) {
+    throw new Error("Receipts must use the same task contract and repository base. Select matching task runs and retry the comparison.");
+  }
   const acceptance = await readJson(path.resolve("evidence/v1/scripted-acceptance.json"));
-  const requiredChecksPassed = (verification) => verification.evidence_complete !== false &&
-    Array.isArray(verification.checks) && verification.checks.length > 0 &&
-    verification.checks.every((check) => !check.required || commandSucceeded(check));
-  const multiAllGatesPassed = Array.isArray(multi.gates) && multi.gates.every((gate) => gate.passed);
   const sharedRuntime = (field) => multi.runtime?.[field] != null && multi.runtime[field] === baseline.runtime?.[field]
     ? multi.runtime[field] : null;
-  const graduate =
-    acceptance.passed &&
-    multi.success &&
-    multiAllGatesPassed &&
-    requiredChecksPassed(multiVerification) &&
-    baseline.success &&
-    requiredChecksPassed(baselineVerification);
+  const reasons = [];
+  if (acceptance?.passed !== true) reasons.push("Rerun scripted acceptance and resolve its failed scenarios.");
+  if (multi.success !== true || multi.terminal_status !== "COMPLETE" || !workflowGatesPassed(multi)) {
+    reasons.push("The multi-role receipt lacks a complete set of passing gates. Rerun the workflow and resolve its failed gates.");
+  }
+  if (baseline.success !== true || baseline.terminal_status !== "COMPLETE" ||
+    baseline.gates?.implementation?.ok !== true || baseline.gates?.verification?.passed !== true) {
+    reasons.push("The baseline receipt lacks passing implementation and verification gates. Rerun the baseline.");
+  }
+  if (!multiEvidence.passed) reasons.push("Multi-role verification is incomplete or doesn't match its task and subject. Rerun implementation and verification.");
+  if (!baselineEvidence.passed) reasons.push("Baseline verification is incomplete or doesn't match its task and subject. Rerun the baseline.");
+  const graduate = reasons.length === 0;
 
   const comparison = {
     schema_version: "mini-dark-factory-comparison/v1",
@@ -95,7 +140,7 @@ async function main(tokens) {
       changed_files: multi.verified_subject?.changed_files ?? [],
       structured_plan: true,
       independent_review: true,
-      required_checks_passed: requiredChecksPassed(multiVerification),
+      required_checks_passed: multiEvidence.passed,
     },
     one_agent: {
       run_id: baseline.run_id,
@@ -110,7 +155,7 @@ async function main(tokens) {
       changed_files: baseline.verified_subject?.changed_files ?? [],
       structured_plan: false,
       independent_review: false,
-      required_checks_passed: requiredChecksPassed(baselineVerification),
+      required_checks_passed: baselineEvidence.passed,
     },
     overhead: {
       wall_time_percent: percentDelta(multi.wall_time_ms, baseline.wall_time_ms),
@@ -120,8 +165,9 @@ async function main(tokens) {
     },
     graduation: {
       graduate_to_qodo_v2: graduate,
+      reasons,
       basis: graduate
-        ? "The live multi-role workflow completed with current exact-subject evidence, every planted controller failure failed closed, and the same task passed the one-agent baseline."
+        ? "The multi-role workflow completed with matching saved verification evidence, scripted acceptance passed, and the same task passed the one-agent baseline."
         : "One or more v1 functional or baseline checks did not pass.",
       claim_boundary:
         "This one-task pilot proves workflow control and inspectability. It does not establish a statistically reliable quality advantage over one-agent coding.",

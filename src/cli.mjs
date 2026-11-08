@@ -97,6 +97,7 @@ function parseFlags(tokens, command) {
   const allowed = COMMAND_FLAGS[command];
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
+    if (["--help", "-h"].includes(token)) return { help: true };
     if (!token.startsWith("--")) throw new Error(`Unexpected argument: ${token}`);
     const name = token.slice(2);
     if (!allowed.has(name)) throw new Error(`Unknown option for ${command}: --${name}`);
@@ -105,7 +106,10 @@ function parseFlags(tokens, command) {
       continue;
     }
     const value = tokens[index + 1];
-    if (!value || value.startsWith("--")) throw new Error(`Missing value for --${name}`);
+    const pathOption = ["task", "suite", "resume", "pi-bin", "qodo-bin", "run-dir"].includes(name);
+    if (!value || (value.startsWith("--") && (!pathOption || allowed.has(value.slice(2))))) {
+      throw new Error(`Missing value for --${name}`);
+    }
     flags[name] = value;
     index += 1;
   }
@@ -381,10 +385,10 @@ try {
     process.stdout.write(HELP);
   } else {
     if (!Object.hasOwn(COMMAND_FLAGS, command)) throw new Error(`Unknown command: ${command}`);
-    if (rest.includes("--help") || rest.includes("-h")) {
+    const flags = parseFlags(rest, command);
+    if (flags.help) {
       process.stdout.write(HELP);
     } else {
-      const flags = parseFlags(rest, command);
       if (command === "acceptance") await acceptance();
       else if (command === "baseline") await baseline(flags);
       else if (command === "benchmark") await benchmarkCommand(flags);
