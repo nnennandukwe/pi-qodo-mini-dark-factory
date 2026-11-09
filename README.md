@@ -16,6 +16,20 @@ Use `--help` on each command for usage. `run --quiet` suppresses the stdout rece
 
 A command that exceeds its deadline produces failed or incomplete evidence even when its cleanup exits zero. Verification, review retry, comparison, and benchmark observations reject that evidence. Captures retain at most 262144 characters per stream and mark truncation; Git, Pi, and Qodo adapters reject truncated evidence before interpreting it. Failed agent stages record `usage_complete: false` and unknown usage. Comparisons suppress unknown usage and percentage changes; benchmarks retain functional results with unknown usage and suppress incomplete usage totals and comparisons. Each live receipt records the Pi version used by that run. Comparisons read runtime versions from those receipts. Older receipts and benchmark records without a completeness marker retain unknown usage. Existing saved evidence files stay intact.
 
+Compare a saved multi-role run with its one-agent baseline:
+
+```bash
+npm run evidence:compare -- --multi <workflow-receipt> --baseline <baseline-receipt> --output comparison.json
+```
+
+Comparison requires matching task IDs and saved task contracts. Remote runs must share a repository base; local fixture runs must share the same base file tree, even when their commit timestamps differ. Each run's verification must match its own recorded base, patch digest, and changed files, include every declared check once, and pass every required check. Graduation also requires complete passing workflow gates and scripted acceptance. Incomplete evidence produces `graduate_to_qodo_v2: false` with recovery steps in `graduation.reasons`. Mismatched task inputs and malformed JSON exit nonzero before replacing an existing comparison; malformed-JSON errors name the file to repair. Help tokens in path-value positions are treated as paths. Saved artifacts must be regular files inside their own run directory; paths to other runs and symlinks are rejected. Comparison reports required command results independently from saved-evidence validity through `required_checks_passed` and `evidence_valid`.
+
+Task verification IDs must be unique; both runners reject duplicates before creating run artifacts. Tasks may contain only optional checks. Comparison preserves that contract while requiring every declared result to be present.
+
+Saved check results must include an integer exit code, explicit boolean timeout and truncation markers, and a spawn-error value, including for optional checks. Comparison checks each recorded argument list against the task command, expanding `{harness_root}` from the saved verification record. Older records use the harness root implied by the original run directory. Keep those older runs at their original location. Fixture comparisons need each saved `repo/` directory to verify the base file tree. The saved diff must match the subject digest; when that digest includes untracked files, comparison also needs the run's `repo/` directory to reconstruct and verify their contents. New verification records retain the original harness root so complete run directories can be moved together.
+
+Both runners recheck changed files after verification and reject files outside the implementation report or task scope. Comparison checks the recorded file lists against the saved patch and any untracked-file evidence. Benchmark records retain command-only `required_checks_passed` and add `verification_passed` plus `implementation_errors` for the full verification outcome. Scope failures count as verifier catches after an accepted implementation and remain resumable benchmark results. Older records keep their existing interpretation.
+
 ## Architecture
 
 | Stage | Runtime | Authority |

@@ -81,8 +81,11 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
     }
     const verificationCommandsDurationMs = Math.round(performance.now() - verificationStarted);
     const timeToVerificationMs = Math.round(performance.now() - started);
+    actualChangedFiles = await changedFiles(repoDir, baseSha);
+    const verifiedImplementation = validateImplementationReport(agentResult.output, task, actualChangedFiles);
     verification = {
       task_id: task.id, base_sha: baseSha, patch_digest: null,
+      harness_root: projectRoot,
       changed_files: actualChangedFiles, checks, evidence_complete: false,
     };
     await writeJson(path.join(artifactsDir, "verification.json"), verification);
@@ -93,7 +96,8 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
     await writeJson(path.join(artifactsDir, "verification.json"), verification);
 
     const failedChecks = checks.filter((check) => check.required && !commandSucceeded(check));
-    const success = implementationGate.ok && failedChecks.length === 0;
+    const verificationPassed = verifiedImplementation.ok && failedChecks.length === 0;
+    const success = implementationGate.ok && verificationPassed;
     const receipt = {
       schema_version: "mini-dark-factory-baseline-receipt/v1",
       run_id: runId,
@@ -116,9 +120,9 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
       gates: {
         implementation: implementationGate,
         verification: {
-          passed: failedChecks.length === 0,
+          passed: verificationPassed,
           failed_checks: failedChecks.map((check) => check.id),
-          reasons: failedChecks.map((check) => `${check.id}: ${commandFailure(check)}`),
+          reasons: [...failedChecks.map((check) => `${check.id}: ${commandFailure(check)}`), ...verifiedImplementation.errors],
         },
       },
       usage: hasCompleteUsage(agentResult.evidence) ? agentResult.evidence.usage : null,

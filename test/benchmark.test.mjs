@@ -750,7 +750,7 @@ test("run observation rejects symlinked artifact path components", async (t) => 
         },
       },
     }),
-    /verification artifact path must not contain symlinks/,
+    /verification artifact path mustn't contain symlinks/,
   );
 });
 
@@ -868,4 +868,39 @@ test("legacy benchmark records remain readable with unverified usage totals supp
   assert.equal(summary.conditions.factory.usage_complete, false);
   assert.equal(summary.conditions.factory.usage.cost_usd, null);
   assert.equal(summary.paired.factory_minus_baseline.cost_usd, null);
+});
+
+test("benchmark checkpoints scope failures and resumes without rerunning conditions", async (t) => {
+  const projectRoot = await mkdtemp(path.join(os.tmpdir(), "pi-qodo-scope-observation-"));
+  t.after(() => rm(projectRoot, { recursive: true, force: true }));
+  const suitePath = await writeCanonicalSuite(projectRoot, "scope-observations");
+  const result = await runBenchmark({
+    projectRoot, suitePath, config: {}, benchmarkId: "scope-observations",
+    executeCondition: async ({ condition, task: taskValue }) => conditionResult(condition,
+      condition === "factory" ? {
+        success: false, terminal_status: "VERIFICATION_FAILED", required_checks_passed: true,
+        verification_passed: false, implementation_errors: ["out-of-scope files changed: generated.txt"],
+        changed_files: [...taskValue.files_expected, "generated.txt"], unnecessary_files: ["generated.txt"],
+        verifier_catch: true,
+      } : {}, taskValue),
+  });
+  assert.equal(result.summary.complete, true);
+  assert.equal(result.summary.conditions.factory.completion_rate, 0);
+  assert.equal(result.summary.conditions.factory.verifier_catches, 5);
+  const resume = () => runBenchmark({ projectRoot, suitePath, config: {}, resumeDir: result.benchmarkDir,
+    executeCondition: async () => { throw new Error("Saved conditions must survive resume"); } });
+  assert.equal((await resume()).summary.completed_run_records, 10);
+  const resultsDir = path.join(result.benchmarkDir, "results");
+  for (const name of await readdir(resultsDir)) {
+    const file = path.join(resultsDir, name);
+    const original = await readFile(file, "utf8");
+    const record = JSON.parse(original);
+    if (record.condition !== "factory") continue;
+    record.verification_passed = true;
+    await writeFile(file, JSON.stringify(record));
+    await assert.rejects(resume(), /verification_passed is inconsistent with its evidence/);
+    await writeFile(file, original);
+    break;
+  }
+  assert.equal((await resume()).summary.conditions.factory.verifier_catches, 5);
 });

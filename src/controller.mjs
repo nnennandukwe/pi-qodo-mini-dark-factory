@@ -231,6 +231,7 @@ export async function runPilot({
     timeToVerificationMs = Math.round(performance.now() - started);
     const verification = {
       task_id: task.id, base_sha: baseSha, patch_digest: null,
+      harness_root: projectRoot,
       changed_files: actualChangedFiles, checks, evidence_complete: false,
     };
     await writeJson(path.join(artifactsDir, "verification.json"), verification);
@@ -241,18 +242,21 @@ export async function runPilot({
     verification.evidence_complete = true;
     await writeJson(path.join(artifactsDir, "verification.json"), verification);
     const failedRequired = checks.filter((check) => check.required && !commandSucceeded(check));
+    const verifiedImplementation = validateImplementationReport(implementerResult.output, task, verification.changed_files);
+    const verificationPassed = failedRequired.length === 0 && verifiedImplementation.ok;
+    const verificationReasons = [...failedRequired.map((check) => `${check.id}: ${commandFailure(check)}`), ...verifiedImplementation.errors];
     gate(
       "verification",
-      failedRequired.length === 0,
-      failedRequired.map((check) => `${check.id}: ${commandFailure(check)}`),
+      verificationPassed,
+      verificationReasons,
       {
         artifact: "artifacts/verification.json",
         required_checks: checks.filter((check) => check.required).map((check) => check.id),
         patch_digest: evidence.digest,
       },
     );
-    if (failedRequired.length > 0) {
-      move("VERIFICATION_FAILED", { failed_checks: failedRequired.map((check) => check.id) });
+    if (!verificationPassed) {
+      move("VERIFICATION_FAILED", { failed_checks: failedRequired.map((check) => check.id), reasons: verificationReasons });
       return finish();
     }
     verifiedSubject = {

@@ -3,8 +3,9 @@ import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs
 import path from "node:path";
 
 import { hasCompleteUsage } from "./usage.mjs";
+import { assertRegularFileWithinRoot, resolveRunArtifact } from "./artifacts.mjs";
 import { commandSucceeded } from "./process.mjs";
-import { validateTask } from "./contracts.mjs";
+import { validateImplementationReport, validateTask } from "./contracts.mjs";
 
 const SUITE_SCHEMA = "mini-dark-factory-benchmark-suite/v1";
 const METADATA_SCHEMA = "mini-dark-factory-benchmark-metadata/v1";
@@ -112,55 +113,6 @@ async function readJsonIfPresent(file, label = "JSON file") {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
-}
-
-async function assertRegularFileWithinRoot(file, root, label) {
-  const resolvedRoot = path.resolve(root);
-  const resolvedFile = path.resolve(file);
-  if (!resolvedFile.startsWith(`${resolvedRoot}${path.sep}`)) {
-    throw new Error(`${label} path escapes its trusted root: ${file}`);
-  }
-
-  const rootStat = await lstat(resolvedRoot);
-  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
-    throw new Error(`${label} root must be a real directory, not a symlink: ${resolvedRoot}`);
-  }
-
-  const components = path.relative(resolvedRoot, resolvedFile).split(path.sep);
-  let current = resolvedRoot;
-  for (const [index, component] of components.entries()) {
-    current = path.join(current, component);
-    const stat = await lstat(current);
-    const final = index === components.length - 1;
-    if (stat.isSymbolicLink()) {
-      if (final) throw new Error(`${label} must be a regular file, not a symlink: ${current}`);
-      throw new Error(`${label} path must not contain symlinks: ${current}`);
-    }
-    if (final && !stat.isFile()) {
-      throw new Error(`${label} must be a regular file: ${current}`);
-    }
-    if (!final && !stat.isDirectory()) {
-      throw new Error(`${label} path component must be a directory: ${current}`);
-    }
-  }
-
-  const [realRoot, realFile] = await Promise.all([realpath(resolvedRoot), realpath(resolvedFile)]);
-  if (!realFile.startsWith(`${realRoot}${path.sep}`)) {
-    throw new Error(`${label} path escapes its trusted root: ${file}`);
-  }
-  return resolvedFile;
-}
-
-async function resolveRunArtifact(runDir, relativePath, label) {
-  if (!nonEmptyString(relativePath) || path.isAbsolute(relativePath)) {
-    throw new Error(`${label} artifact path must be relative to the run directory`);
-  }
-  const root = path.resolve(runDir);
-  const resolved = path.resolve(root, relativePath);
-  if (!resolved.startsWith(`${root}${path.sep}`)) {
-    throw new Error(`${label} artifact path escapes the run directory: ${relativePath}`);
-  }
-  return assertRegularFileWithinRoot(resolved, root, `${label} artifact`);
 }
 
 async function readRunJsonIfPresent(runDir, relativePath, label) {
@@ -406,6 +358,14 @@ function observationErrors(observation, task) {
       errors.push(`condition result ${key} must be a string array`);
     }
   }
+  if (Object.hasOwn(observation, "verification_passed") || Object.hasOwn(observation, "implementation_errors")) {
+    if (typeof observation.verification_passed !== "boolean") errors.push("condition result verification_passed must be boolean");
+    if (!Array.isArray(observation.implementation_errors) || !observation.implementation_errors.every(nonEmptyString)) {
+      errors.push("condition result implementation_errors must be a string array");
+    } else if (observation.verification_passed !== (observation.required_checks_passed && observation.implementation_errors.length === 0)) {
+      errors.push("condition result verification_passed is inconsistent with its evidence");
+    }
+  }
   if (
     Array.isArray(observation.changed_files) &&
     Array.isArray(observation.unnecessary_files)
@@ -419,7 +379,7 @@ function observationErrors(observation, task) {
     typeof observation.implementation_gate_passed === "boolean" &&
     typeof observation.required_checks_passed === "boolean" &&
     observation.verifier_catch !==
-      (observation.implementation_gate_passed && !observation.required_checks_passed)
+      (observation.implementation_gate_passed && !(observation.verification_passed ?? observation.required_checks_passed))
   ) {
     errors.push("condition result verifier_catch is inconsistent with its gates");
   }
@@ -800,9 +760,16 @@ export async function observationFromRun({ projectRoot, task, condition, runResu
   const artifactChecksPassed =
     verification !== null && verification.evidence_complete !== false &&
     verification.checks.every((check) => !check.required || commandSucceeded(check));
-  if (verificationGate !== artifactChecksPassed) {
+  const implementation = receipt.artifact_paths?.implementation
+    ? validateImplementationReport(await readJson(
+        await resolveRunArtifact(runDir, receipt.artifact_paths.implementation, "implementation"),
+        "implementation artifact",
+      ), task, verification?.changed_files ?? [])
+    : { ok: implementationGate, errors: implementationGate ? [] : ["The saved implementation gate is missing or failed."] };
+  const artifactVerificationPassed = artifactChecksPassed && implementation.ok;
+  if (verificationGate !== artifactVerificationPassed) {
     throw new Error(
-      `Verification gate and artifact disagree for ${task.id}: gate=${verificationGate}, artifact=${artifactChecksPassed}`,
+      `Verification gate and artifact disagree for ${task.id}: gate=${verificationGate}, artifact=${artifactVerificationPassed}`,
     );
   }
   const changedFiles = receipt.verified_subject?.changed_files ?? verification?.changed_files ?? [];
@@ -840,8 +807,10 @@ export async function observationFromRun({ projectRoot, task, condition, runResu
     success: receipt.success,
     implementation_gate_passed: implementationGate,
     required_checks_passed: artifactChecksPassed,
+    verification_passed: artifactVerificationPassed,
+    implementation_errors: implementation.errors,
     failed_checks: failedChecks,
-    verifier_catch: implementationGate && !artifactChecksPassed,
+    verifier_catch: implementationGate && !artifactVerificationPassed,
     wall_time_ms: receipt.wall_time_ms,
     time_to_verification_ms: receipt.time_to_verification_ms ?? null,
     verification_commands_duration_ms: receipt.verification_commands_duration_ms ?? null,
