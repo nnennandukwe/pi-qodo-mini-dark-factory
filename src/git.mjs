@@ -63,7 +63,7 @@ export async function prepareTaskRepository({ projectRoot, task, destination }) 
 }
 
 export async function changedFiles(cwd, baseSha) {
-  const tracked = (await git(cwd, ["diff", "--name-only", "--no-ext-diff", baseSha, "--"]))
+  const tracked = (await git(cwd, ["diff", "--name-only", "--no-ext-diff", "--no-textconv", baseSha, "--"]))
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
@@ -97,7 +97,7 @@ async function readUntrackedFile(repoDir, relativePath) {
 }
 
 export async function patchEvidence(cwd, baseSha) {
-  const trackedPatch = await git(cwd, ["diff", "--binary", "--no-ext-diff", baseSha, "--"]);
+  const trackedPatch = await git(cwd, ["diff", "--binary", "--no-ext-diff", "--no-textconv", baseSha, "--"]);
   const untracked = (await git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]))
     .split("\0")
     .filter(Boolean)

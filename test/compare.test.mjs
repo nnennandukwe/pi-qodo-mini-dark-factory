@@ -42,6 +42,18 @@ async function comparisonWorkspace(t, configureTask = null) {
 
 test("comparison checks the retained tracked patch and independently recorded runner root", async (t) => {
   const workspace = await comparisonWorkspace(t);
+  const trace = path.join(workspace.cwd, "comparison-git.jsonl");
+  workspace.env.GIT_TRACE2_EVENT = trace;
+  const initial = await workspace.compare();
+  assert.equal(initial.exit_code, 0, initial.stderr);
+  assert.equal(JSON.parse(initial.stdout).graduate_to_qodo_v2, true);
+  const commands = (await readFile(trace, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const diffs = commands.filter((entry) => entry.event === "start" && entry.argv.includes("diff"));
+  assert.ok(diffs.length >= 2, "expected Git to inspect both retained patches");
+  for (const { argv } of diffs) {
+    assert.ok(argv.includes("--no-ext-diff") && argv.includes("--no-textconv"), JSON.stringify(argv));
+  }
+  delete workspace.env.GIT_TRACE2_EVENT;
   for (const receiptPath of [workspace.multi, workspace.baseline]) {
     const repoDir = path.join(path.dirname(path.dirname(receiptPath)), "repo");
     const source = path.join(repoDir, "src/session.ts");
