@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -60,7 +60,7 @@ function failedReviewState() {
   return state;
 }
 
-async function sourceRun({ status = "REVIEWER_FAILED" } = {}) {
+async function sourceRun({ status = "REVIEWER_FAILED", untrackedNotes = false } = {}) {
   const runDir = await mkdtemp(path.join(os.tmpdir(), "pi-qodo-retry-"));
   const repoDir = path.join(runDir, "repo");
   const artifactsDir = path.join(runDir, "artifacts");
@@ -69,6 +69,11 @@ async function sourceRun({ status = "REVIEWER_FAILED" } = {}) {
   await writeFile(path.join(repoDir, "code.txt"), "baseline\n");
   const baseSha = await initializeRepository(repoDir);
   await writeFile(path.join(repoDir, "code.txt"), "verified change\n");
+  const files = ["code.txt"];
+  if (untrackedNotes) {
+    await writeFile(path.join(repoDir, "notes.txt"), "verified notes\n");
+    files.push("notes.txt");
+  }
   const evidence = await patchEvidence(repoDir, baseSha);
   const task = {
     id: "retry-task",
@@ -77,7 +82,7 @@ async function sourceRun({ status = "REVIEWER_FAILED" } = {}) {
     fixture: "unused",
     acceptance_criteria: ["Review the unchanged patch"],
     files_expected: ["code.txt"],
-    files_allowed: ["code.txt"],
+    files_allowed: files,
     required_test_files: ["code.txt"],
     constraints: ["Do not change code"],
     non_goals: ["Do not reimplement"],
@@ -94,7 +99,7 @@ async function sourceRun({ status = "REVIEWER_FAILED" } = {}) {
     verified_subject: {
       base_sha: baseSha,
       patch_digest: evidence.digest,
-      changed_files: ["code.txt"],
+      changed_files: files,
     },
     state_history: state.history,
   };
@@ -116,7 +121,7 @@ async function sourceRun({ status = "REVIEWER_FAILED" } = {}) {
     `${JSON.stringify({
       task_id: task.id,
       summary: "Verified change",
-      changed_files: ["code.txt"],
+      changed_files: files,
       commands_run: ["true"],
       assumptions: [],
       unresolved_risks: [],
@@ -183,6 +188,43 @@ test("retry blocks stale evidence before calling the reviewer", async () => {
   assert.equal(reviewer.calls, 0);
   assert.match(result.receipt.recovery, /rerun implementation and verification/i);
 });
+
+for (const phase of ["before review", "after approval", "after reviewer failure"]) {
+  test(`retry saves an incomplete patch receipt ${phase} and recovers after restoration`, async (t) => {
+    const source = await sourceRun({ untrackedNotes: true });
+    t.after(() => rm(source.runDir, { recursive: true, force: true }));
+    const notesPath = path.join(source.repoDir, "notes.txt");
+    const replaceNotes = async () => {
+      await rm(notesPath);
+      await symlink("code.txt", notesPath);
+    };
+    if (phase === "before review") await replaceNotes();
+    let calls = 0;
+    const reviewer = { run: async () => {
+      calls++;
+      await replaceNotes();
+      if (phase === "after reviewer failure") throw new Error("reviewer unavailable");
+      return { output: reviewOutput(), evidence: { role: "reviewer" } };
+    } };
+    const options = { runDir: source.runDir, reviewerName: "fake", reportProgress: false };
+    const result = await retryReview({ ...options, reviewer });
+    const saved = JSON.parse(await readFile(result.receiptPath, "utf8"));
+    assert.equal(saved.terminal_status, "EVIDENCE_STALE");
+    assert.equal(saved.success, false);
+    assert.match(saved.recovery, /restore.*regular file.*notes\.txt/i);
+    assert.equal(calls, phase === "before review" ? 0 : 1);
+    assert.equal(saved.gates.at(-1).name, phase === "before review" ? "evidence_freshness_before_review" : "evidence_freshness_after_review");
+    assert.equal(saved.gates.at(-1).passed, false);
+    if (phase === "after reviewer failure") {
+      assert.deepEqual(saved.gates.find((entry) => entry.name === "reviewer_runtime").reasons, ["reviewer unavailable"]);
+    }
+    await rm(notesPath);
+    await writeFile(notesPath, "verified notes\n");
+    const recovered = await retryReview({ ...options, reviewer: new FakeReviewer() });
+    assert.equal(recovered.receipt.terminal_status, "COMPLETE");
+    assert.equal(await readFile(path.join(source.artifactsDir, "receipt.json"), "utf8"), source.receiptText);
+  });
+}
 
 test("reviewer runtime failure commits failure evidence and recovery guidance", async () => {
   const source = await sourceRun();

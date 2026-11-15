@@ -10,7 +10,7 @@ import {
   validateTask,
 } from "./contracts.mjs";
 import { changedFiles, patchEvidence } from "./git.mjs";
-import { commandSucceeded } from "./process.mjs";
+import { commandSucceeded, IncompleteProcessEvidenceError } from "./process.mjs";
 import { transition } from "./state-machine.mjs";
 
 function safeTimestamp() {
@@ -234,23 +234,36 @@ export async function retryReview({
     return { receipt, receiptPath, attemptDir, repoDir };
   };
 
-  const before = await patchEvidence(repoDir, sourceReceipt.base_sha);
-  if (before.digest !== sourceReceipt.verified_subject.patch_digest) {
-    gate("evidence_freshness_before_review", false, ["patch changed after verification"], {
-      verified_patch_digest: sourceReceipt.verified_subject.patch_digest,
-      current_patch_digest: before.digest,
-    });
-    state = transition(state, "EVIDENCE_INVALIDATED", { current_patch_digest: before.digest });
+  const checkPatch = async (name, mismatchReason, recovery, details = {}) => {
+    const verifiedDigest = sourceReceipt.verified_subject.patch_digest;
+    let current;
+    let reason = mismatchReason;
+    try {
+      current = await patchEvidence(repoDir, sourceReceipt.base_sha);
+    } catch (error) {
+      if (!(error instanceof IncompleteProcessEvidenceError)) throw error;
+      reason = error.message;
+      recovery = error.recovery;
+    }
+    if (current?.digest === verifiedDigest) {
+      gate(name, true, [], { patch_digest: verifiedDigest });
+      return { patch: current.patch };
+    }
+    const observed = current ? { current_patch_digest: current.digest } : { reason };
+    gate(name, false, [reason], { verified_patch_digest: verifiedDigest, ...observed });
+    state = transition(state, "EVIDENCE_INVALIDATED", { ...observed, ...details });
     if (reportProgress) renderState(state, gates.at(-1));
-    return finish("Restore the verified patch or rerun implementation and verification before review.");
-  }
+    return { failedAttempt: await finish(recovery) };
+  };
+  const before = await checkPatch("evidence_freshness_before_review", "patch changed after verification",
+    "Restore the verified patch or rerun implementation and verification before review.");
+  if (before.failedAttempt) return before.failedAttempt;
   if (before.patch !== diff) {
     throw new Error(
       "Stored diff artifact does not match the current verified Git patch. " +
         "Preserve this run for diagnosis and start a new fully verified run.",
     );
   }
-  gate("evidence_freshness_before_review", true, [], { patch_digest: before.digest });
   state = transition(state, "RETRY_REVIEW", { attempt_id: attemptId, reviewer: reviewerName });
   if (reportProgress) renderState(state, gates.at(-1));
 
@@ -264,20 +277,9 @@ export async function retryReview({
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     gate("reviewer_runtime", false, [reason]);
-    const afterFailure = await patchEvidence(repoDir, sourceReceipt.base_sha);
-    if (afterFailure.digest !== sourceReceipt.verified_subject.patch_digest) {
-      gate("evidence_freshness_after_review", false, ["patch changed during failed review"], {
-        verified_patch_digest: sourceReceipt.verified_subject.patch_digest,
-        current_patch_digest: afterFailure.digest,
-      });
-      state = transition(state, "EVIDENCE_INVALIDATED", {
-        current_patch_digest: afterFailure.digest,
-        reviewer_error: reason,
-      });
-      if (reportProgress) renderState(state, gates.at(-1));
-      return finish("Discard the review-time mutation and rerun implementation and verification.");
-    }
-    gate("evidence_freshness_after_review", true, [], { patch_digest: afterFailure.digest });
+    const afterFailure = await checkPatch("evidence_freshness_after_review", "patch changed during failed review",
+      "Discard the review-time mutation and rerun implementation and verification.", { reviewer_error: reason });
+    if (afterFailure.failedAttempt) return afterFailure.failedAttempt;
     state = transition(state, "AGENT_FAILED", { role: "reviewer", reason });
     if (reportProgress) renderState(state, gates.at(-1));
     return finish("Fix the reviewer error shown in the gate evidence, then run retry-review again.");
@@ -285,17 +287,9 @@ export async function retryReview({
 
   await writeJson(path.join(attemptDir, "review.json"), reviewerResult.output);
   await writeJson(path.join(attemptDir, "reviewer.json"), reviewerResult.evidence);
-  const after = await patchEvidence(repoDir, sourceReceipt.base_sha);
-  if (after.digest !== sourceReceipt.verified_subject.patch_digest) {
-    gate("evidence_freshness_after_review", false, ["patch changed during review"], {
-      verified_patch_digest: sourceReceipt.verified_subject.patch_digest,
-      current_patch_digest: after.digest,
-    });
-    state = transition(state, "EVIDENCE_INVALIDATED", { current_patch_digest: after.digest });
-    if (reportProgress) renderState(state, gates.at(-1));
-    return finish("Discard the review-time mutation and rerun implementation and verification.");
-  }
-  gate("evidence_freshness_after_review", true, [], { patch_digest: after.digest });
+  const after = await checkPatch("evidence_freshness_after_review", "patch changed during review",
+    "Discard the review-time mutation and rerun implementation and verification.");
+  if (after.failedAttempt) return after.failedAttempt;
 
   const reviewContract = validateReview(reviewerResult.output, task);
   if (!reviewContract.ok) {
