@@ -31,16 +31,14 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
   let actualChangedFiles = [];
   let implementationGate = null;
   let verification = null;
-  const finishFailure = async (status, reason, agentEvidence = null) => {
+  const finishFailure = async (status, reason, recovery, agentEvidence = null) => {
     const complete = hasCompleteUsage(agentEvidence);
     const receipt = {
       schema_version: "mini-dark-factory-baseline-receipt/v1", run_id: runId,
       task_id: task.id, terminal_status: status, success: false, runtime,
       started_at: startedAt, finished_at: new Date().toISOString(),
       wall_time_ms: Math.round(performance.now() - started), base_sha: baseSha,
-      reason, recovery: status === "AGENT_FAILED"
-        ? "Fix the agent runtime error shown above and rerun baseline."
-        : "Resolve the reported timeout or reduce output with a smaller patch, then rerun implementation and verification.",
+      reason, recovery,
       usage: complete ? agentEvidence.usage : null, usage_complete: complete,
       gates: {
         ...(implementationGate ? { implementation: implementationGate } : {}),
@@ -59,7 +57,8 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
   try {
     agentResult = await runner.run("baseline", { cwd: repoDir, input: { task } });
   } catch (error) {
-    return finishFailure("AGENT_FAILED", error instanceof Error ? error.message : String(error));
+    return finishFailure("AGENT_FAILED", error instanceof Error ? error.message : String(error),
+      "Fix the agent runtime error shown above and rerun baseline.");
   }
 
   try {
@@ -142,6 +141,6 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
     return { receipt, runDir, artifactsDir };
   } catch (error) {
     if (!(error instanceof IncompleteProcessEvidenceError)) throw error;
-    return finishFailure("FAILED", error.message, agentResult.evidence);
+    return finishFailure("FAILED", error.message, error.recovery, agentResult.evidence);
   }
 }

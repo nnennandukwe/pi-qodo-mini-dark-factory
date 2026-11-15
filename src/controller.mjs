@@ -360,7 +360,7 @@ export async function runPilot({
     return finish();
   } catch (error) {
     if (!(error instanceof IncompleteProcessEvidenceError)) throw error;
-    recovery = "Reduce command output or use a smaller patch, then rerun implementation and verification.";
+    recovery = error.recovery;
     gate("execution_evidence", false, [error.message], { recovery });
     verifiedSubject = null;
     const event = state.status === "IMPLEMENTING" ? "IMPLEMENTATION_REJECTED"

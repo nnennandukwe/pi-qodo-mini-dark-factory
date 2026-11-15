@@ -87,7 +87,10 @@ async function readUntrackedFile(repoDir, relativePath) {
     await assertRegularFileWithinRoot(file, repoDir, "untracked file");
     return await handle.readFile();
   } catch (error) {
-    throw new IncompleteProcessEvidenceError(`Can't verify untracked file ${relativePath}: ${error.message}. Restore a regular file and retry.`, { cause: error });
+    throw new IncompleteProcessEvidenceError(`Can't verify untracked file ${relativePath}: ${error.message}`, {
+      cause: error,
+      recovery: `Restore a regular file at ${relativePath} and retry.`,
+    });
   } finally {
     await handle?.close();
   }
