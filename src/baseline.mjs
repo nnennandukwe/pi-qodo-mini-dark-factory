@@ -113,6 +113,7 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
       review_time_ms: null,
       base_sha: baseSha,
       verified_subject: {
+        harness_root: path.resolve(projectRoot),
         base_sha: baseSha,
         patch_digest: evidence.digest,
         changed_files: actualChangedFiles,

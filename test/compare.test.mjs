@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, copyFile, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -39,6 +39,34 @@ async function comparisonWorkspace(t, configureTask = null) {
   ], workspace);
   return { ...workspace, multi, baseline, output, compare };
 }
+
+test("comparison checks the retained tracked patch and independently recorded runner root", async (t) => {
+  const workspace = await comparisonWorkspace(t);
+  for (const receiptPath of [workspace.multi, workspace.baseline]) {
+    const repoDir = path.join(path.dirname(path.dirname(receiptPath)), "repo");
+    const source = path.join(repoDir, "src/session.ts");
+    const before = await readFile(source, "utf8");
+    await writeFile(source, before + "\n// Later local edit\n");
+    const changed = await workspace.compare();
+    assert.equal(changed.exit_code, 0, changed.stderr);
+    assert.equal(JSON.parse(changed.stdout).graduate_to_qodo_v2, false);
+    await writeFile(source, before);
+    assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, true);
+    const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+    assert.equal(receipt.verified_subject.harness_root, await realpath(workspace.cwd));
+    const verificationPath = path.join(path.dirname(receiptPath), "verification.json");
+    const original = await readFile(verificationPath, "utf8");
+    const verification = JSON.parse(original);
+    const otherRoot = path.join(workspace.cwd, "earlier-checkout");
+    verification.checks = verification.checks.map((check) => ({ ...check,
+      argv: check.argv.map((part) => part.replaceAll(verification.harness_root, otherRoot)) }));
+    verification.harness_root = otherRoot;
+    await writeFile(verificationPath, JSON.stringify(verification));
+    assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, false);
+    await writeFile(verificationPath, original);
+    assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, true);
+  }
+});
 
 test("comparison rejects unrelated receipts and incomplete saved evidence, then recovers", async (t) => {
   const workspace = await comparisonWorkspace(t);

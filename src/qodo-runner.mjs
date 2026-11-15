@@ -26,6 +26,7 @@ function severityFor(finding) {
 
 function fileFor(finding) {
   return (
+    finding.location?.file_path ??
     finding.diff_reference?.file_path ??
     finding.diff_pointer?.file_path ??
     finding.file_path ??
@@ -40,13 +41,29 @@ export function normalizeQodoReview(result, task) {
   if (result.meta?.coverage?.complete === false || result.finding_state?.complete === false) {
     throw new Error("Qodo review evidence is incomplete. Retry review after complete coverage is available.");
   }
-  const currentFindings = [...result.findings];
-  for (const name of ["introduced", "still_open"]) {
-    const entries = result.finding_state?.[name];
+  const state = result.finding_state ?? {};
+  const inventory = new Map(result.findings.filter((finding) => typeof finding?.id === "string")
+    .map((finding) => [finding.id, finding]));
+  const closedIds = new Set();
+  const openEntries = [];
+  for (const name of ["resolved", "dismissed", "introduced", "still_open"]) {
+    const entries = state[name];
     if (entries === undefined) continue;
     if (!Array.isArray(entries)) throw new Error(`Qodo finding_state.${name} must be an array. Retry review with a valid result.`);
-    currentFindings.push(...entries);
+    for (const entry of entries) {
+      const finding = typeof entry === "string" ? inventory.get(entry) : entry;
+      if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
+        throw new Error(`Qodo finding_state.${name} contains an invalid finding. Retry review with a valid result.`);
+      }
+      if (name === "resolved" || name === "dismissed") {
+        if (typeof finding.id === "string" && finding.id.trim()) closedIds.add(finding.id);
+      } else {
+        if (closedIds.has(finding.id)) throw new Error("Qodo reports conflicting finding states. Retry review with a valid result.");
+        openEntries.push(finding);
+      }
+    }
   }
+  const currentFindings = [...result.findings.filter((finding) => !closedIds.has(finding?.id)), ...openEntries];
   const findingsById = new Map();
   for (const finding of currentFindings) {
     if (!finding || typeof finding !== "object" || Array.isArray(finding)) {

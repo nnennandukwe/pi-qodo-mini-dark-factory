@@ -260,6 +260,7 @@ export async function runPilot({
       return finish();
     }
     verifiedSubject = {
+      harness_root: path.resolve(projectRoot),
       base_sha: baseSha,
       patch_digest: evidence.digest,
       changed_files: verification.changed_files,

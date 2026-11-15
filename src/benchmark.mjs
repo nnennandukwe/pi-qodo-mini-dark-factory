@@ -243,7 +243,7 @@ function conditionSummary(records, condition) {
   const completed = selected.filter((record) => record.success).length;
   const checksPassed = selected.filter((record) => record.required_checks_passed).length;
   const passingVerificationTimes = selected
-    .filter((record) => record.required_checks_passed)
+    .filter((record) => record.verification_passed ?? record.required_checks_passed)
     .map((record) => record.time_to_verification_ms);
   return {
     runs: selected.length,
@@ -744,10 +744,9 @@ export async function observationFromRun({ projectRoot, task, condition, runResu
         "verification artifact",
       )
     : null;
-  const implementationGate =
-    condition === "baseline"
-      ? receipt.gates?.implementation?.ok === true
-      : receipt.gates?.find((gate) => gate.name === "implementation")?.passed === true;
+  const baseline = condition === "baseline";
+  const gate = baseline ? receipt.gates?.implementation : receipt.gates?.find((entry) => entry.name === "implementation");
+  const implementationGate = (baseline ? gate?.ok : gate?.passed) === true;
   const verificationGate =
     condition === "baseline"
       ? receipt.gates?.verification?.passed === true
@@ -760,12 +759,18 @@ export async function observationFromRun({ projectRoot, task, condition, runResu
   const artifactChecksPassed =
     verification !== null && verification.evidence_complete !== false &&
     verification.checks.every((check) => !check.required || commandSucceeded(check));
-  const implementation = receipt.artifact_paths?.implementation
-    ? validateImplementationReport(await readJson(
-        await resolveRunArtifact(runDir, receipt.artifact_paths.implementation, "implementation"),
-        "implementation artifact",
-      ), task, verification?.changed_files ?? [])
-    : { ok: implementationGate, errors: implementationGate ? [] : ["The saved implementation gate is missing or failed."] };
+  let implementation = { ok: implementationGate, errors: implementationGate ? [] :
+    (baseline ? gate?.errors : gate?.reasons) ?? ["The saved implementation gate is missing or failed."] };
+  if (receipt.artifact_paths?.implementation) {
+    const report = await readJson(
+      await resolveRunArtifact(runDir, receipt.artifact_paths.implementation, "implementation"),
+      "implementation artifact",
+    );
+    if (verification) {
+      if (!Array.isArray(verification.changed_files)) throw new Error("Verification artifact is missing its changed file list.");
+      implementation = validateImplementationReport(report, task, verification.changed_files);
+    }
+  }
   const artifactVerificationPassed = artifactChecksPassed && implementation.ok;
   if (verificationGate !== artifactVerificationPassed) {
     throw new Error(
