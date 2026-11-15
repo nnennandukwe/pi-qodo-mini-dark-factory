@@ -349,6 +349,14 @@ test("comparison binds untracked content and supports relocated run directories"
   assert.equal(JSON.parse((await compare()).stdout).graduate_to_qodo_v2, true);
   for (const result of [multi, baseline]) {
     const notes = path.join(archive, result.receipt.run_id, "repo/notes.txt");
+    const saved = await readFile(path.join(workspace.cwd, "comparison.json"), "utf8");
+    await rm(notes);
+    await symlink("src/session.ts", notes);
+    const linked = await compare();
+    assert.equal(linked.exit_code, 1, linked.stderr);
+    assert.match(linked.stderr, /regular file|symbolic link|symlink/i);
+    assert.equal(await readFile(path.join(workspace.cwd, "comparison.json"), "utf8"), saved);
+    await rm(notes);
     await writeFile(notes, "changed after verification\n");
     const changed = await compare();
     assert.equal(changed.exit_code, 0, changed.stderr);

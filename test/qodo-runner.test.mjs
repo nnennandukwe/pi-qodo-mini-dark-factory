@@ -88,6 +88,9 @@ test("ambiguous closed finding IDs require a corrected review", () => {
   const different = { ...finding, title: "An unrelated finding" };
   for (const [findings, finding_state] of [
     [[finding], { resolved: ["one"], dismissed: ["one"] }],
+    [[{ ...finding, location: { file_path: "src/cli.mjs", start_line: 5 } },
+      { ...finding, location: { file_path: "src/cli.mjs", start_line: 6 } }], { resolved: ["one"] }],
+    [[{ ...finding, description: "First instance" }, { ...finding, description: "Second instance" }], { dismissed: ["one"] }],
     [[finding, different], { resolved: ["one"] }],
     [[finding], { resolved: [different] }],
     [[finding], { still_open: ["one"], resolved: ["one"] }],

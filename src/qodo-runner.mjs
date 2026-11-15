@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { assertCompleteOutput, commandSucceeded, runCommand } from "./process.mjs";
 
@@ -39,8 +40,10 @@ function findingTitle(finding) {
 }
 
 function sameFinding(left, right) {
-  return findingTitle(left) === findingTitle(right) && severityFor(left) === severityFor(right) &&
-    fileFor(left) === fileFor(right) && (left.category ?? null) === (right.category ?? null);
+  // Attribution can change between inventory and lifecycle entries for the same finding.
+  const { attribution_status: leftStatus, ...leftEvidence } = left;
+  const { attribution_status: rightStatus, ...rightEvidence } = right;
+  return isDeepStrictEqual(leftEvidence, rightEvidence);
 }
 
 function activeFindings(result) {

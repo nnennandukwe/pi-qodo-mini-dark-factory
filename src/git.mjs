@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
-import { cp, mkdir, readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { cp, lstat, mkdir, open } from "node:fs/promises";
 import path from "node:path";
 
-import { assertCompleteOutput, runCommand } from "./process.mjs";
+import { assertRegularFileWithinRoot } from "./artifacts.mjs";
+import { assertCompleteOutput, IncompleteProcessEvidenceError, runCommand } from "./process.mjs";
 
 async function git(cwd, args) {
   const result = await runCommand(["git", ...args], { cwd });
@@ -71,6 +73,26 @@ export async function changedFiles(cwd, baseSha) {
   return [...new Set([...tracked, ...untracked])].sort();
 }
 
+async function readUntrackedFile(repoDir, relativePath) {
+  const file = path.join(repoDir, relativePath);
+  let handle;
+  try {
+    await assertRegularFileWithinRoot(file, repoDir, "untracked file");
+    const expected = await lstat(file, { bigint: true });
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || expected.dev !== opened.dev || expected.ino !== opened.ino) {
+      throw new Error("The untracked file changed during inspection.");
+    }
+    await assertRegularFileWithinRoot(file, repoDir, "untracked file");
+    return await handle.readFile();
+  } catch (error) {
+    throw new IncompleteProcessEvidenceError(`Can't verify untracked file ${relativePath}: ${error.message}. Restore a regular file and retry.`, { cause: error });
+  } finally {
+    await handle?.close();
+  }
+}
+
 export async function patchEvidence(cwd, baseSha) {
   const trackedPatch = await git(cwd, ["diff", "--binary", "--no-ext-diff", baseSha, "--"]);
   const untracked = (await git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]))
@@ -80,7 +102,7 @@ export async function patchEvidence(cwd, baseSha) {
 
   const untrackedParts = [];
   for (const file of untracked) {
-    const contents = await readFile(path.join(cwd, file));
+    const contents = await readUntrackedFile(cwd, file);
     untrackedParts.push(`\nUNTRACKED ${file}\n${contents.toString("base64")}\n`);
   }
 
