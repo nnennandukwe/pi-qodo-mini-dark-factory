@@ -1,3 +1,4 @@
 node_modules/
 .factory-runs/
 *.log
+/evidence/v1/scripted-acceptance.json

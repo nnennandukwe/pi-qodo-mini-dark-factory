@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { validateTask } from "./contracts.mjs";
@@ -57,19 +57,36 @@ async function savedEvidence(receipt, receiptPath) {
     Array.isArray(subject.changed_files) && Array.isArray(verification?.changed_files) &&
     isDeepStrictEqual([...subject.changed_files].sort(), [...verification.changed_files].sort());
   const checks = verification?.checks;
-  const harnessRoot = verification?.harness_root ?? path.resolve(runDir, "../..");
+  const originalRoot = path.resolve(runDir, "../..");
+  const harnessRoot = verification?.harness_root ?? subject?.harness_root ?? originalRoot;
+  const rootMatches = subject?.harness_root !== undefined
+    ? subject.harness_root === harnessRoot
+    : harnessRoot === originalRoot || harnessRoot === process.cwd();
   const validTask = validateTask(task).ok && task.id === receipt.task_id &&
     (!task.repository?.expected_base_sha || task.repository.expected_base_sha === receipt.base_sha);
+  const repoDir = path.join(runDir, "repo");
+  let repositoryAvailable = false;
+  if (matchesSubject) {
+    const directory = await lstat(repoDir).catch((error) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (directory) {
+      if (!directory.isDirectory()) throw new Error(`Restore the saved run repository at ${repoDir} and retry.`);
+      await resolveRunArtifact(runDir, "repo/.git/HEAD", "run repository HEAD");
+      repositoryAvailable = true;
+    }
+  }
   let fixtureBaseTree = null;
   if (validTask && task.fixture && matchesSubject) {
-    const repoDir = path.join(runDir, "repo");
+    if (!repositoryAvailable) throw new Error(`Can't verify fixture base contents in ${repoDir}. Restore the run repository and retry.`);
     const tree = await runCommand(["git", "rev-parse", "--verify", `${receipt.base_sha}^{tree}`], { cwd: repoDir });
     if (!commandSucceeded(tree) || !/^[0-9a-f]{40}$/.test(tree.stdout.trim())) {
       throw new Error(`Can't verify fixture base contents in ${repoDir}. Restore the run repository and retry.`);
     }
     fixtureBaseTree = tree.stdout.trim();
   }
-  const readableChecks = validTask && typeof harnessRoot === "string" && path.isAbsolute(harnessRoot) &&
+  const readableChecks = validTask && rootMatches && typeof harnessRoot === "string" && path.isAbsolute(harnessRoot) &&
     Array.isArray(checks);
   const checkMatches = (expected) => {
     const matching = checks.filter((candidate) => candidate?.id === expected.id);
@@ -97,9 +114,9 @@ async function savedEvidence(receipt, receiptPath) {
     const validStats = (stats === null || commandSucceeded(stats)) && rows.every((row) => /^(\d+|-)\t(\d+|-)\t.+/s.test(row));
     const patchFiles = rows.map((row) => row.slice(row.indexOf("\t", row.indexOf("\t") + 1) + 1));
     patchMatches = createHash("sha256").update(diff).digest("hex") === subject?.patch_digest;
-    if (!patchMatches) {
-      // The canonical digest also includes untracked files, which aren't in diff.patch.
-      const repoDir = path.join(runDir, "repo");
+    if (repositoryAvailable || !patchMatches) {
+      // A retained checkout can independently confirm both tracked and untracked changes.
+      if (!repositoryAvailable) throw new Error(`Can't verify saved patch evidence in ${repoDir}. Restore the run repository and retry.`);
       let current;
       try {
         current = await patchEvidence(repoDir, receipt.base_sha);
@@ -113,6 +130,7 @@ async function savedEvidence(receipt, receiptPath) {
       isDeepStrictEqual([...new Set(patchFiles)].sort(), [...subject.changed_files].sort());
   }
   const problems = [];
+  if (!rootMatches) problems.push("The saved check root differs from the run origin. Use the original harness for older receipts.");
   if (!completeChecks || verification?.evidence_complete !== true) {
     problems.push("Saved verification results are incomplete, don't match the declared checks, or contain failed required commands.");
   }

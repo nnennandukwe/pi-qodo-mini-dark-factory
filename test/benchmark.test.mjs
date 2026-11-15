@@ -887,9 +887,12 @@ test("benchmark checkpoints scope failures and resumes without rerunning conditi
   assert.equal(result.summary.complete, true);
   assert.equal(result.summary.conditions.factory.completion_rate, 0);
   assert.equal(result.summary.conditions.factory.verifier_catches, 5);
+  assert.equal(result.summary.conditions.factory.mean_time_to_first_passing_implementation_ms, null);
   const resume = () => runBenchmark({ projectRoot, suitePath, config: {}, resumeDir: result.benchmarkDir,
     executeCondition: async () => { throw new Error("Saved conditions must survive resume"); } });
-  assert.equal((await resume()).summary.completed_run_records, 10);
+  const resumed = await resume();
+  assert.equal(resumed.summary.completed_run_records, 10);
+  assert.equal(resumed.summary.conditions.factory.mean_time_to_first_passing_implementation_ms, null);
   const resultsDir = path.join(result.benchmarkDir, "results");
   for (const name of await readdir(resultsDir)) {
     const file = path.join(resultsDir, name);
@@ -903,4 +906,24 @@ test("benchmark checkpoints scope failures and resumes without rerunning conditi
     break;
   }
   assert.equal((await resume()).summary.conditions.factory.verifier_catches, 5);
+});
+
+test("early failure retains observed gate reasons without inventing file changes", async (t) => {
+  const runDir = await mkdtemp(path.join(os.tmpdir(), "pi-qodo-early-implementation-"));
+  t.after(() => rm(runDir, { recursive: true, force: true }));
+  const artifactsDir = path.join(runDir, "artifacts");
+  await mkdir(artifactsDir);
+  const implementation = { task_id: task.id, summary: "Updated the fixture",
+    changed_files: task.files_expected, commands_run: [], assumptions: [], unresolved_risks: [] };
+  await writeFile(path.join(artifactsDir, "implementation.json"), JSON.stringify(implementation));
+  for (const condition of ["baseline", "factory"]) {
+    const reasons = ["The initial implementation check stopped."];
+    const receipt = { success: false, terminal_status: "IMPLEMENTATION_REJECTED",
+      gates: condition === "baseline" ? { implementation: { ok: false, errors: reasons } }
+        : [{ name: "implementation", passed: false, reasons }],
+      artifact_paths: { implementation: "artifacts/implementation.json" } };
+    const observed = await observationFromRun({ projectRoot: runDir, task, condition, runResult: { runDir, artifactsDir, receipt } });
+    assert.equal(observed.verification_passed, false);
+    assert.deepEqual(observed.implementation_errors, reasons);
+  }
 });

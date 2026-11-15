@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -86,6 +86,40 @@ setInterval(() => {}, 1000);
 });
 
 for (const kind of ["controller", "baseline"]) {
+  test(`${kind} saves recovery for an untracked link and succeeds with the regular file`, async (t) => {
+    const workspace = await cliWorkspace(t);
+    const taskPath = path.join(workspace.cwd, "tasks/reject-expired-session-token.json");
+    const task = JSON.parse(await readFile(taskPath, "utf8"));
+    task.files_allowed.push("notes.txt");
+    task.verification = [task.verification[0]];
+    await writeFile(taskPath, JSON.stringify(task));
+    const scripted = new ScriptedRunner();
+    for (const useLink of [true, false]) {
+      const runner = { run: async (role, context) => {
+        const result = await scripted.run(role === "baseline" ? "implementer" : role, context);
+        if (role === "implementer" || role === "baseline") {
+          const notesPath = path.join(context.cwd, "notes.txt");
+          if (useLink) await symlink("src/session.ts", notesPath);
+          else await writeFile(notesPath, "verified notes\n");
+          result.output.changed_files.push("notes.txt");
+        }
+        return result;
+      } };
+      const options = { projectRoot: workspace.cwd, taskPath, runner };
+      const result = kind === "controller" ? await runPilot({ ...options, runnerName: "scripted" }) : await runBaseline(options);
+      const receipt = JSON.parse(await readFile(path.join(result.artifactsDir, "receipt.json"), "utf8"));
+      assert.equal(receipt.success, !useLink);
+      if (useLink) {
+        assert.match(receipt.recovery, /restore.*regular file/i);
+        assert.match(receipt.recovery, /notes\.txt/);
+        if (kind === "controller") {
+          const gate = receipt.gates.find((entry) => entry.name === "execution_evidence");
+          assert.equal(gate.evidence.recovery, receipt.recovery);
+        }
+      }
+    }
+  });
+
   test(`${kind} writes a failed receipt when a tracked patch exceeds capture limits`, async (t) => {
     const workspace = await cliWorkspace(t);
     const taskPath = path.join(workspace.cwd, "tasks/reject-expired-session-token.json");

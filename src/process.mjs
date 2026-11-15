@@ -8,14 +8,23 @@ function appendBounded(current, chunk) {
   return next.slice(next.length - OUTPUT_LIMIT);
 }
 
-export class IncompleteProcessEvidenceError extends Error {}
+export class IncompleteProcessEvidenceError extends Error {
+  constructor(message, options = {}) {
+    super(options.recovery ? `${message} ${options.recovery}` : message, options);
+    this.recovery = options.recovery ?? message;
+  }
+}
 
 export function assertCompleteOutput(result, label) {
   if (result.timed_out) {
-    throw new IncompleteProcessEvidenceError(`${label} timed out; evidence is incomplete. Rerun within the deadline.`);
+    throw new IncompleteProcessEvidenceError(`${label} timed out; evidence is incomplete.`, {
+      recovery: "Rerun within the deadline.",
+    });
   }
   if (result.stdout_truncated || result.stderr_truncated) {
-    throw new IncompleteProcessEvidenceError(`${label} output exceeded the capture limit; evidence is incomplete. Reduce command output and rerun.`);
+    throw new IncompleteProcessEvidenceError(`${label} output exceeded the capture limit; evidence is incomplete.`, {
+      recovery: "Reduce command output and rerun.",
+    });
   }
 }
 

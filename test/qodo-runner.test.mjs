@@ -69,6 +69,37 @@ test("Qodo incremental and reused results retain open blockers and deduplicate I
   }
 });
 
+test("current review inventory resolves lifecycle IDs and uses reported locations", () => {
+  const open = { id: "open", title: "Review the command", action_level: "action_required", location: { file_path: "src/cli.mjs" } };
+  const closed = { ...open, id: "closed", title: "Prior issue" };
+  const envelope = { findings: [open, closed], finding_state: {
+    complete: true, introduced: [], still_open: ["open"], resolved: ["closed"], dismissed: [],
+  } };
+  const review = normalizeQodoReview(envelope, task);
+  assert.deepEqual(review.findings.map((finding) => finding.file), ["src/cli.mjs"]);
+  assert.equal(review.decision, "request_changes");
+  envelope.finding_state.still_open = [];
+  envelope.finding_state.dismissed = ["open"];
+  assert.equal(normalizeQodoReview(envelope, task).decision, "approve");
+});
+
+test("ambiguous closed finding IDs require a corrected review", () => {
+  const finding = { id: "one", title: "Review this change", action_level: "action_required" };
+  const different = { ...finding, title: "An unrelated finding" };
+  for (const [findings, finding_state] of [
+    [[finding], { resolved: ["one"], dismissed: ["one"] }],
+    [[{ ...finding, location: { file_path: "src/cli.mjs", start_line: 5 } },
+      { ...finding, location: { file_path: "src/cli.mjs", start_line: 6 } }], { resolved: ["one"] }],
+    [[{ ...finding, description: "First instance" }, { ...finding, description: "Second instance" }], { dismissed: ["one"] }],
+    [[finding, different], { resolved: ["one"] }],
+    [[finding], { resolved: [different] }],
+    [[finding], { still_open: ["one"], resolved: ["one"] }],
+  ]) {
+    assert.throws(() => normalizeQodoReview({ findings, finding_state }, task), /conflicting|ambiguous/i);
+  }
+  assert.equal(normalizeQodoReview({ findings: [finding], finding_state: { resolved: ["one"] } }, task).decision, "approve");
+});
+
 test("Qodo incomplete coverage and finding state require another review", () => {
   for (const fields of [
     { meta: { coverage: { complete: false }, reviewers: { ran: ["issue"] } } },
@@ -174,7 +205,11 @@ process.stdout.write(await readFile(${JSON.stringify(resultPath)}, "utf8"));
     assert.equal(blocked.receipt.terminal_status, "CHANGES_REQUESTED");
     assert.equal(blocked.receipt.success, false);
 
-    await writeFile(resultPath, JSON.stringify({ findings: [], meta: { coverage: { complete: true } } }));
+    await writeFile(resultPath, JSON.stringify({
+      findings: [{ id: "settled", title: "Former issue", action_level: "action_required" }],
+      finding_state: { complete: true, introduced: [], still_open: [], resolved: ["settled"], dismissed: [] },
+      meta: { coverage: { complete: true } },
+    }));
     const recovered = await retryReview({ runDir: run.runDir, reviewer, reportProgress: false });
     assert.equal(recovered.receipt.terminal_status, "COMPLETE");
     assert.equal(recovered.receipt.verified_subject.patch_digest, run.receipt.verified_subject.patch_digest);

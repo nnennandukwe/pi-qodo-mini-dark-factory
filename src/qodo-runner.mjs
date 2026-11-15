@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { assertCompleteOutput, commandSucceeded, runCommand } from "./process.mjs";
 
@@ -26,11 +27,57 @@ function severityFor(finding) {
 
 function fileFor(finding) {
   return (
+    finding.location?.file_path ??
     finding.diff_reference?.file_path ??
     finding.diff_pointer?.file_path ??
     finding.file_path ??
     "repository"
   );
+}
+
+function findingTitle(finding) {
+  return finding.title ?? finding.finding_title ?? finding.description;
+}
+
+function sameFinding(left, right) {
+  // Attribution can change between inventory and lifecycle entries for the same finding.
+  const { attribution_status: leftStatus, ...leftEvidence } = left;
+  const { attribution_status: rightStatus, ...rightEvidence } = right;
+  return isDeepStrictEqual(leftEvidence, rightEvidence);
+}
+
+function activeFindings(result) {
+  const state = result.finding_state ?? {};
+  const inventory = Map.groupBy(result.findings, (finding) => finding?.id);
+  const closed = new Map();
+  const openEntries = [];
+  for (const name of ["resolved", "dismissed", "introduced", "still_open"]) {
+    const entries = state[name];
+    if (entries === undefined) continue;
+    if (!Array.isArray(entries)) throw new Error(`Qodo finding_state.${name} must be an array. Retry review with a valid result.`);
+    for (const entry of entries) {
+      const reference = typeof entry === "string";
+      const id = reference ? entry : entry?.id;
+      const matches = inventory.get(id) ?? [];
+      const finding = reference ? matches[0] : entry;
+      if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
+        throw new Error(`Qodo finding_state.${name} contains an invalid finding. Retry review with a valid result.`);
+      }
+      const closing = name === "resolved" || name === "dismissed";
+      if (closing && (typeof id !== "string" || !id.trim())) {
+        throw new Error("Qodo closed finding has an invalid ID. Retry review with a valid result.");
+      }
+      if ((reference || closing) && matches.some((candidate) => !sameFinding(candidate, finding))) {
+        throw new Error("Qodo finding ID is ambiguous. Retry review with a valid result.");
+      }
+      if (closed.has(id) && closed.get(id) !== name) {
+        throw new Error("Qodo reports conflicting finding states. Retry review with a valid result.");
+      }
+      if (closing) closed.set(id, name);
+      else openEntries.push(finding);
+    }
+  }
+  return [...result.findings.filter((finding) => !closed.has(finding?.id)), ...openEntries];
 }
 
 export function normalizeQodoReview(result, task) {
@@ -40,19 +87,13 @@ export function normalizeQodoReview(result, task) {
   if (result.meta?.coverage?.complete === false || result.finding_state?.complete === false) {
     throw new Error("Qodo review evidence is incomplete. Retry review after complete coverage is available.");
   }
-  const currentFindings = [...result.findings];
-  for (const name of ["introduced", "still_open"]) {
-    const entries = result.finding_state?.[name];
-    if (entries === undefined) continue;
-    if (!Array.isArray(entries)) throw new Error(`Qodo finding_state.${name} must be an array. Retry review with a valid result.`);
-    currentFindings.push(...entries);
-  }
+  const currentFindings = activeFindings(result);
   const findingsById = new Map();
   for (const finding of currentFindings) {
     if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
       throw new Error("Qodo finding is invalid; expected an object. Retry review with a valid result.");
     }
-    const summary = finding.title ?? finding.finding_title ?? finding.description;
+    const summary = findingTitle(finding);
     if (typeof summary !== "string" || !summary.trim() ||
         (!SEVERITIES.includes(finding.severity) && !ACTION_SEVERITIES.has(finding.action_level ?? finding.severity_level))) {
       throw new Error("Qodo finding is invalid; expected a summary and recognized severity. Retry review with a valid result.");

@@ -4,7 +4,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { runCommand } from "../src/process.mjs";
-import { access, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { initializeRepository } from "../src/git.mjs";
 import { cliWorkspace } from "./helpers/workspace.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -122,11 +123,20 @@ test("baseline exits reflect actual verification results", async (t) => {
 
 test("acceptance succeeds when all planted failures reach their expected gates", async (t) => {
   const workspace = await cliWorkspace(t);
+  await copyFile(path.join(root, ".gitignore"), path.join(workspace.cwd, ".gitignore"));
+  await initializeRepository(workspace.cwd);
   const result = await runCommand([process.execPath, "src/cli.mjs", "acceptance"], workspace);
   const summary = JSON.parse(result.stdout);
   assert.equal(summary.scenarios.length, 7);
   assert.equal(summary.passed, true, result.stderr);
   assert.equal(result.exit_code, 0);
+  const status = await runCommand(["git", "status", "--porcelain"], workspace);
+  assert.equal(status.exit_code, 0);
+  assert.equal(status.stdout, "", "Generated acceptance output must permit the benchmark's clean-worktree check");
+  const manualFile = path.join(workspace.cwd, "evidence/v1/notes.md");
+  await writeFile(manualFile, "Developer notes");
+  const manual = await runCommand(["git", "ls-files", "--others", "--exclude-standard"], workspace);
+  assert.equal(manual.stdout.trim(), "evidence/v1/notes.md");
 });
 
 test("oversized review leaves usage unknown in the receipt and comparison", async (t) => {

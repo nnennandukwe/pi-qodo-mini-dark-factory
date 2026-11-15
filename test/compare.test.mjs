@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, copyFile, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
@@ -39,6 +39,46 @@ async function comparisonWorkspace(t, configureTask = null) {
   ], workspace);
   return { ...workspace, multi, baseline, output, compare };
 }
+
+test("comparison checks the retained tracked patch and independently recorded runner root", async (t) => {
+  const workspace = await comparisonWorkspace(t);
+  const trace = path.join(workspace.cwd, "comparison-git.jsonl");
+  workspace.env.GIT_TRACE2_EVENT = trace;
+  const initial = await workspace.compare();
+  assert.equal(initial.exit_code, 0, initial.stderr);
+  assert.equal(JSON.parse(initial.stdout).graduate_to_qodo_v2, true);
+  const commands = (await readFile(trace, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const diffs = commands.filter((entry) => entry.event === "start" && entry.argv.includes("diff"));
+  assert.ok(diffs.length >= 2, "expected Git to inspect both retained patches");
+  for (const { argv } of diffs) {
+    assert.ok(argv.includes("--no-ext-diff") && argv.includes("--no-textconv"), JSON.stringify(argv));
+  }
+  delete workspace.env.GIT_TRACE2_EVENT;
+  for (const receiptPath of [workspace.multi, workspace.baseline]) {
+    const repoDir = path.join(path.dirname(path.dirname(receiptPath)), "repo");
+    const source = path.join(repoDir, "src/session.ts");
+    const before = await readFile(source, "utf8");
+    await writeFile(source, before + "\n// Later local edit\n");
+    const changed = await workspace.compare();
+    assert.equal(changed.exit_code, 0, changed.stderr);
+    assert.equal(JSON.parse(changed.stdout).graduate_to_qodo_v2, false);
+    await writeFile(source, before);
+    assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, true);
+    const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
+    assert.equal(receipt.verified_subject.harness_root, await realpath(workspace.cwd));
+    const verificationPath = path.join(path.dirname(receiptPath), "verification.json");
+    const original = await readFile(verificationPath, "utf8");
+    const verification = JSON.parse(original);
+    const otherRoot = path.join(workspace.cwd, "earlier-checkout");
+    verification.checks = verification.checks.map((check) => ({ ...check,
+      argv: check.argv.map((part) => part.replaceAll(verification.harness_root, otherRoot)) }));
+    verification.harness_root = otherRoot;
+    await writeFile(verificationPath, JSON.stringify(verification));
+    assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, false);
+    await writeFile(verificationPath, original);
+    assert.equal(JSON.parse((await workspace.compare()).stdout).graduate_to_qodo_v2, true);
+  }
+});
 
 test("comparison rejects unrelated receipts and incomplete saved evidence, then recovers", async (t) => {
   const workspace = await comparisonWorkspace(t);
@@ -304,7 +344,7 @@ test("comparison binds untracked content and supports relocated run directories"
     }
     return result;
   } };
-  const options = { projectRoot: workspace.cwd, taskPath, runner };
+  const options = { projectRoot: path.relative(process.cwd(), workspace.cwd), taskPath, runner };
   const multi = await runPilot({ ...options, runnerName: "scripted" });
   const baseline = await runBaseline(options);
   assert.equal(multi.receipt.success, true);
@@ -321,6 +361,14 @@ test("comparison binds untracked content and supports relocated run directories"
   assert.equal(JSON.parse((await compare()).stdout).graduate_to_qodo_v2, true);
   for (const result of [multi, baseline]) {
     const notes = path.join(archive, result.receipt.run_id, "repo/notes.txt");
+    const saved = await readFile(path.join(workspace.cwd, "comparison.json"), "utf8");
+    await rm(notes);
+    await symlink("src/session.ts", notes);
+    const linked = await compare();
+    assert.equal(linked.exit_code, 1, linked.stderr);
+    assert.match(linked.stderr, /regular file|symbolic link|symlink/i);
+    assert.equal(await readFile(path.join(workspace.cwd, "comparison.json"), "utf8"), saved);
+    await rm(notes);
     await writeFile(notes, "changed after verification\n");
     const changed = await compare();
     assert.equal(changed.exit_code, 0, changed.stderr);
