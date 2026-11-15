@@ -332,7 +332,7 @@ test("comparison binds untracked content and supports relocated run directories"
     }
     return result;
   } };
-  const options = { projectRoot: workspace.cwd, taskPath, runner };
+  const options = { projectRoot: path.relative(process.cwd(), workspace.cwd), taskPath, runner };
   const multi = await runPilot({ ...options, runnerName: "scripted" });
   const baseline = await runBaseline(options);
   assert.equal(multi.receipt.success, true);

@@ -12,6 +12,7 @@ async function writeJson(file, value) {
 }
 
 export async function runBaseline({ projectRoot, taskPath, runner, runtime = null, verificationTimeoutMs = 180_000 }) {
+  const harnessRoot = path.resolve(projectRoot);
   const startedAt = new Date().toISOString();
   const started = performance.now();
   const task = JSON.parse(await readFile(taskPath, "utf8"));
@@ -67,12 +68,12 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
     actualChangedFiles = await changedFiles(repoDir, baseSha);
     implementationGate = validateImplementationReport(agentResult.output, task, actualChangedFiles);
 
-    const toolPath = path.join(projectRoot, "node_modules", ".bin");
+    const toolPath = path.join(harnessRoot, "node_modules", ".bin");
     const verificationEnv = { ...process.env, PATH: `${toolPath}:${process.env.PATH ?? ""}` };
     const checks = [];
     const verificationStarted = performance.now();
     for (const check of task.verification) {
-      const argv = check.argv.map((part) => part.replaceAll("{harness_root}", projectRoot));
+      const argv = check.argv.map((part) => part.replaceAll("{harness_root}", harnessRoot));
       checks.push({
         id: check.id,
         required: check.required,
@@ -85,7 +86,7 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
     const verifiedImplementation = validateImplementationReport(agentResult.output, task, actualChangedFiles);
     verification = {
       task_id: task.id, base_sha: baseSha, patch_digest: null,
-      harness_root: projectRoot,
+      harness_root: harnessRoot,
       changed_files: actualChangedFiles, checks, evidence_complete: false,
     };
     await writeJson(path.join(artifactsDir, "verification.json"), verification);
@@ -113,7 +114,7 @@ export async function runBaseline({ projectRoot, taskPath, runner, runtime = nul
       review_time_ms: null,
       base_sha: baseSha,
       verified_subject: {
-        harness_root: path.resolve(projectRoot),
+        harness_root: harnessRoot,
         base_sha: baseSha,
         patch_digest: evidence.digest,
         changed_files: actualChangedFiles,

@@ -82,6 +82,7 @@ export async function runPilot({
   runtime = null,
   verificationTimeoutMs = 180_000,
 }) {
+  const harnessRoot = path.resolve(projectRoot);
   const startedAt = new Date().toISOString();
   const started = performance.now();
   const task = JSON.parse(await readFile(taskPath, "utf8"));
@@ -214,12 +215,12 @@ export async function runPilot({
     move("IMPLEMENTATION_ACCEPTED");
 
     move("START_VERIFICATION");
-    const toolPath = path.join(projectRoot, "node_modules", ".bin");
+    const toolPath = path.join(harnessRoot, "node_modules", ".bin");
     const verificationEnv = { ...process.env, PATH: `${toolPath}:${process.env.PATH ?? ""}` };
     const checks = [];
     const verificationStarted = performance.now();
     for (const check of task.verification) {
-      const argv = check.argv.map((part) => part.replaceAll("{harness_root}", projectRoot));
+      const argv = check.argv.map((part) => part.replaceAll("{harness_root}", harnessRoot));
       const command = await runCommand(argv, {
         cwd: repoDir,
         env: verificationEnv,
@@ -231,7 +232,7 @@ export async function runPilot({
     timeToVerificationMs = Math.round(performance.now() - started);
     const verification = {
       task_id: task.id, base_sha: baseSha, patch_digest: null,
-      harness_root: projectRoot,
+      harness_root: harnessRoot,
       changed_files: actualChangedFiles, checks, evidence_complete: false,
     };
     await writeJson(path.join(artifactsDir, "verification.json"), verification);
@@ -260,7 +261,7 @@ export async function runPilot({
       return finish();
     }
     verifiedSubject = {
-      harness_root: path.resolve(projectRoot),
+      harness_root: harnessRoot,
       base_sha: baseSha,
       patch_digest: evidence.digest,
       changed_files: verification.changed_files,
