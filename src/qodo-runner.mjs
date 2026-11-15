@@ -34,6 +34,49 @@ function fileFor(finding) {
   );
 }
 
+function findingTitle(finding) {
+  return finding.title ?? finding.finding_title ?? finding.description;
+}
+
+function sameFinding(left, right) {
+  return findingTitle(left) === findingTitle(right) && severityFor(left) === severityFor(right) &&
+    fileFor(left) === fileFor(right) && (left.category ?? null) === (right.category ?? null);
+}
+
+function activeFindings(result) {
+  const state = result.finding_state ?? {};
+  const inventory = Map.groupBy(result.findings, (finding) => finding?.id);
+  const closed = new Map();
+  const openEntries = [];
+  for (const name of ["resolved", "dismissed", "introduced", "still_open"]) {
+    const entries = state[name];
+    if (entries === undefined) continue;
+    if (!Array.isArray(entries)) throw new Error(`Qodo finding_state.${name} must be an array. Retry review with a valid result.`);
+    for (const entry of entries) {
+      const reference = typeof entry === "string";
+      const id = reference ? entry : entry?.id;
+      const matches = inventory.get(id) ?? [];
+      const finding = reference ? matches[0] : entry;
+      if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
+        throw new Error(`Qodo finding_state.${name} contains an invalid finding. Retry review with a valid result.`);
+      }
+      const closing = name === "resolved" || name === "dismissed";
+      if (closing && (typeof id !== "string" || !id.trim())) {
+        throw new Error("Qodo closed finding has an invalid ID. Retry review with a valid result.");
+      }
+      if ((reference || closing) && matches.some((candidate) => !sameFinding(candidate, finding))) {
+        throw new Error("Qodo finding ID is ambiguous. Retry review with a valid result.");
+      }
+      if (closed.has(id) && closed.get(id) !== name) {
+        throw new Error("Qodo reports conflicting finding states. Retry review with a valid result.");
+      }
+      if (closing) closed.set(id, name);
+      else openEntries.push(finding);
+    }
+  }
+  return [...result.findings.filter((finding) => !closed.has(finding?.id)), ...openEntries];
+}
+
 export function normalizeQodoReview(result, task) {
   if (!result || !Array.isArray(result.findings)) {
     throw new Error("Qodo result did not contain a findings array");
@@ -41,35 +84,13 @@ export function normalizeQodoReview(result, task) {
   if (result.meta?.coverage?.complete === false || result.finding_state?.complete === false) {
     throw new Error("Qodo review evidence is incomplete. Retry review after complete coverage is available.");
   }
-  const state = result.finding_state ?? {};
-  const inventory = new Map(result.findings.filter((finding) => typeof finding?.id === "string")
-    .map((finding) => [finding.id, finding]));
-  const closedIds = new Set();
-  const openEntries = [];
-  for (const name of ["resolved", "dismissed", "introduced", "still_open"]) {
-    const entries = state[name];
-    if (entries === undefined) continue;
-    if (!Array.isArray(entries)) throw new Error(`Qodo finding_state.${name} must be an array. Retry review with a valid result.`);
-    for (const entry of entries) {
-      const finding = typeof entry === "string" ? inventory.get(entry) : entry;
-      if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
-        throw new Error(`Qodo finding_state.${name} contains an invalid finding. Retry review with a valid result.`);
-      }
-      if (name === "resolved" || name === "dismissed") {
-        if (typeof finding.id === "string" && finding.id.trim()) closedIds.add(finding.id);
-      } else {
-        if (closedIds.has(finding.id)) throw new Error("Qodo reports conflicting finding states. Retry review with a valid result.");
-        openEntries.push(finding);
-      }
-    }
-  }
-  const currentFindings = [...result.findings.filter((finding) => !closedIds.has(finding?.id)), ...openEntries];
+  const currentFindings = activeFindings(result);
   const findingsById = new Map();
   for (const finding of currentFindings) {
     if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
       throw new Error("Qodo finding is invalid; expected an object. Retry review with a valid result.");
     }
-    const summary = finding.title ?? finding.finding_title ?? finding.description;
+    const summary = findingTitle(finding);
     if (typeof summary !== "string" || !summary.trim() ||
         (!SEVERITIES.includes(finding.severity) && !ACTION_SEVERITIES.has(finding.action_level ?? finding.severity_level))) {
       throw new Error("Qodo finding is invalid; expected a summary and recognized severity. Retry review with a valid result.");

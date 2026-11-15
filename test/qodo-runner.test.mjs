@@ -83,6 +83,20 @@ test("current review inventory resolves lifecycle IDs and uses reported location
   assert.equal(normalizeQodoReview(envelope, task).decision, "approve");
 });
 
+test("ambiguous closed finding IDs require a corrected review", () => {
+  const finding = { id: "one", title: "Review this change", action_level: "action_required" };
+  const different = { ...finding, title: "An unrelated finding" };
+  for (const [findings, finding_state] of [
+    [[finding], { resolved: ["one"], dismissed: ["one"] }],
+    [[finding, different], { resolved: ["one"] }],
+    [[finding], { resolved: [different] }],
+    [[finding], { still_open: ["one"], resolved: ["one"] }],
+  ]) {
+    assert.throws(() => normalizeQodoReview({ findings, finding_state }, task), /conflicting|ambiguous/i);
+  }
+  assert.equal(normalizeQodoReview({ findings: [finding], finding_state: { resolved: ["one"] } }, task).decision, "approve");
+});
+
 test("Qodo incomplete coverage and finding state require another review", () => {
   for (const fields of [
     { meta: { coverage: { complete: false }, reviewers: { ran: ["issue"] } } },
